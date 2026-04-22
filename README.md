@@ -1,7 +1,7 @@
 ## iotc-freertos-ek-ra6w1
 
 ### Board Setup
-- Type "setup" on the first terminal to set up WiFi.
+- Type "setup" on the first terminal to set up Wi-Fi.
 
 ```
 Stop all services for the setting.
@@ -58,8 +58,11 @@ IP Connection Type: Automatic IP
 
  SNTP Client enable ? [Yes/No/Quit] : N
 ```
-- Setup board jumpers as below.
-![board screenshot](media/jumper.png)
+
+<br><br>
+- Setup board jumpers as below: <br>
+<img src="media/board.jpeg" alt="pic" width="400" style="transform: rotate(-90deg); margin-left: 100px;">
+
 
 ### Project Setup
 - Modify the file *"src/app_config.h"* to set up the /IOTCONNECT credentials.

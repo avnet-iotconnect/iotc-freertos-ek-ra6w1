@@ -1,3 +1,6 @@
 [submodule "lib"]
-	path = lib
+	path = iotc-c-lib
+	url = https://github.com/avnet-iotconnect/iotc-c-lib.git
+[submodule "iotc-c-lib"]
+	path = iotc-c-lib
 	url = https://github.com/avnet-iotconnect/iotc-c-lib.git

@@ -1,0 +1,187 @@
+/**
+ ****************************************************************************************
+ *
+ * @file sdk_queue.h
+ *
+ * @brief Simple helper to manage queue
+ *
+ * Copyright (c) 2023-2024 Renesas Electronics. All rights reserved.
+ *
+ * This software ("Software") is owned by Renesas Electronics.
+ *
+ * By using this Software you agree that Renesas Electronics retains all
+ * intellectual property and proprietary rights in and to this Software and any
+ * use, reproduction, disclosure or distribution of the Software without express
+ * written permission or a license agreement from Renesas Electronics is
+ * strictly prohibited. This Software is solely for use on or in conjunction
+ * with Renesas Electronics products.
+ *
+ * EXCEPT AS OTHERWISE PROVIDED IN A LICENSE AGREEMENT BETWEEN THE PARTIES, THE
+ * SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. EXCEPT AS OTHERWISE
+ * PROVIDED IN A LICENSE AGREEMENT BETWEEN THE PARTIES, IN NO EVENT SHALL
+ * RENESAS ELECTRONICS BE LIABLE FOR ANY DIRECT, SPECIAL, INDIRECT, INCIDENTAL,
+ * OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF
+ * USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+ * OF THE SOFTWARE.
+ *
+ ****************************************************************************************
+ */
+
+#ifndef SDK_QUEUE_H_
+#define SDK_QUEUE_H_
+
+#include <stdbool.h>
+#include <stddef.h>
+
+struct queue_elem;
+
+typedef struct {
+        size_t size;
+        struct queue_elem *head;
+        struct queue_elem *tail;
+} queue_t;
+
+typedef void (* queue_foreach_func_t) (void *data, void *user_data);
+
+typedef bool (* queue_match_func_t) (const void *data, const void *match_data);
+
+typedef void (* queue_destroy_func_t) (void *data);
+
+/**
+ * Initialize queue structure
+ *
+ * \param [in] q        queue structure
+ *
+ */
+void queue_init(queue_t *q);
+
+/**
+ * Add element on the front of queue
+ *
+ * \param [in] q        queue structure
+ * \param [in] data     queue element
+ *
+ */
+void queue_push_front(queue_t *q, void *data);
+
+/**
+ * Add element on the back of queue
+ *
+ * \param [in] q        queue structure
+ * \param [in] data     queue element
+ *
+ */
+void queue_push_back(queue_t *q, void *data);
+
+/**
+ * Remove element from the front of queue
+ *
+ * \param [in] q        queue structure
+ *
+ * \return queue element
+ *
+ */
+void *queue_pop_front(queue_t *q);
+
+/**
+ * Get element from the front of queue
+ *
+ * Element is not removed from queue
+ *
+ * \param [in] q        queue structure
+ *
+ * \return queue element
+ *
+ */
+void *queue_peek_front(const queue_t *q);
+
+/**
+ * Get element from the back of queue
+ *
+ * Element is not removed from queue
+ *
+ * \param [in] q        queue structure
+ *
+ * \return queue element
+ *
+ */
+void *queue_peek_back(const queue_t *q);
+
+/**
+ * Get number of elements on queue
+ *
+ * \param [in] q        queue structure
+ *
+ * \return number of elements in queue
+ *
+ */
+size_t queue_length(const queue_t *q);
+
+/**
+ * Execute callback for each element of queue
+ *
+ * \param [in] q        queue structure
+ * \param [in] func     callback function
+ * \param [in] user_data any pointer passed to callback function
+ *
+ */
+void queue_foreach(const queue_t *q, queue_foreach_func_t func, void *user_data);
+
+/**
+ * Find element in queue
+ *
+ * First element which matches using \p func is returned. Element IS NOT removed from queue
+ *
+ * \param [in] q        queue structure
+ * \param [in] func     callback matching function
+ * \param [in] match_data any pointer passed to callback function
+ *
+ * \return queue element
+ *
+ */
+void *queue_find(const queue_t *q, queue_match_func_t func, const void *match_data);
+
+/**
+ * Remove element from queue
+ *
+ * First element which matches using \p func is returned. Element IS removed from queue
+ *
+ * \param [in] q        queue structure
+ * \param [in] func     callback matching function
+ * \param [in] match_data any pointer passed to callback function
+ *
+ * \return queue element
+ *
+ */
+void *queue_remove(queue_t *q, queue_match_func_t func, const void *match_data);
+
+/**
+ * Remove all elements from queue
+ *
+ * Callback is called for each element and it should be freed there. Queue is empty after this call.
+ *
+ * \param [in] q        queue structure
+ * \param [in] func     callback function to free element
+ *
+ */
+void queue_remove_all(queue_t *q, queue_destroy_func_t func);
+
+/**
+ * Remove all matching elements from queue
+ *
+ * Every element which matches using \p m_func is removed from queue.
+ * \p d_func callback is called for each element and it should be freed there.
+ *
+ * \param [in] q        queue structure
+ * \param [in] m_func   callback matching function
+ * \param [in] match_data any pointer passed to callback function
+ * \param [in] d_func   callback function to free element
+ *
+ */
+void queue_filter(queue_t *q, queue_match_func_t m_func, const void *match_data,
+                                                                        queue_destroy_func_t d_func);
+
+#endif /* SDK_QUEUE_H_ */

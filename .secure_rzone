@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<rzone>
+    <device Dvendor="Renesas" Dname="RA6W1">
+        <processor Pname="CM33" Dcore="Cortex-M33" Dfpu="1" Dmpu="1" Dtz="NO_TZ" Ddsp="1" Dendian="Little-endian" Dclock="160000000" DcoreVersion="r1p0" DnumInterrupts="55" DnumSauRegions="4"/>
+    </device>
+    <resources>
+        <memories>
+            <memory name="RAM" type="RAM" start="0x08000000" size="0x000b0000" security=""/>
+            <memory name="FLASH" type="ROM" start="0x00000000" size="0x04000000" security=""/>
+            <memory name="ID_CODE" type="ROM" start="0x00000000" size="0x00000000" security=""/>
+            <memory name="QSPI_FLASH" type="ROM" start="0x60000000" size="0x0" security=""/>
+            <memory name="OSPI_DEVICE_0" type="ROM" start="0x80020000" size="0x0" security=""/>
+            <memory name="OSPI_DEVICE_1" type="ROM" start="0x80030000" size="0x0" security=""/>
+            <memory name="NS_OFFSET" type="ROM" start="0x10000000" size="0" security=""/>
+            <memory name="RAM_NS" type="RAM" start="0x18000000" physical="0x08000000" size="0x000b0000" security="n"/>
+            <memory name="FLASH_NS" type="ROM" start="0x10000000" physical="0x00000000" size="0x04000000" security="n"/>
+        </memories>
+        <peripherals>
+            <group name="TIM_W" start="0x40080000" size="0x00000000" info="32-Bit General PWM Timer">
+                <peripheral name="TIM_W1" start="0x40080000" size="0x00000000"/>
+                <peripheral name="TIM_W2" start="0x40080100" size="0x00000000"/>
+                <peripheral name="TIM_W3" start="0x40080200" size="0x00000000"/>
+                <peripheral name="TIM_W4" start="0x40080300" size="0x00000000"/>
+                <peripheral name="TIM_W5" start="0x40080400" size="0x00000000"/>
+                <peripheral name="TIM_W6" start="0x40080500" size="0x00000000"/>
+                <peripheral name="TIM_W7" start="0x40080600" size="0x00000000"/>
+                <peripheral name="TIM_W8" start="0x40080700" size="0x00000000"/>
+            </group>
+            <group name="CRC_W" start="0x40032100" size="0x00000000" info="CRC Calculation">
+                <peripheral name="CRC_W0" start="0x40032100" size="0x00000000"/>
+                <peripheral name="CRC_W1" start="0x40032200" size="0x00000000"/>
+            </group>
+            <group name="DMA" start="0x40070700" size="0x00000000" info="DMA Controller Common">
+                <peripheral name="DMA0" start="0x40070700" size="0x00000000"/>
+                <peripheral name="DMA1" start="0x40070720" size="0x00000000"/>
+                <peripheral name="DMA2" start="0x40070740" size="0x00000000"/>
+                <peripheral name="DMA3" start="0x40070760" size="0x00000000"/>
+                <peripheral name="DMA4" start="0x40070780" size="0x00000000"/>
+                <peripheral name="DMA5" start="0x400707a0" size="0x00000000"/>
+                <peripheral name="DMA6" start="0x400707c0" size="0x00000000"/>
+                <peripheral name="DMA7" start="0x400707e0" size="0x00000000"/>
+                <peripheral name="DMA8" start="0x40070800" size="0x00000000"/>
+                <peripheral name="DMA9" start="0x40070820" size="0x00000000"/>
+                <peripheral name="DMA10" start="0x40070840" size="0x00000000"/>
+                <peripheral name="DMA11" start="0x40070860" size="0x00000000"/>
+                <peripheral name="DMA12" start="0x40070880" size="0x00000000"/>
+                <peripheral name="DMA13" start="0x400708a0" size="0x00000000"/>
+                <peripheral name="DMA14" start="0x400708c0" size="0x00000000"/>
+                <peripheral name="DMA15" start="0x400708e0" size="0x00000000"/>
+            </group>
+            <group name="I2C_W" start="0x40090000" size="0x00000000" info="I2C Bus Interface">
+                <peripheral name="I2C_W0" start="0x40090000" size="0x00000000"/>
+                <peripheral name="I2C_W1" start="0x40090100" size="0x00000000"/>
+            </group>
+            <group name="GPIO" start="0x400B0000" size="0x00000000" info="I/O Ports">
+                <peripheral name="GPIO0" start="0x400b0000" size="0x00000000"/>
+            </group>
+            <group name="SPI_W" start="0x40090200" size="0x00000000" info="Serial Peripheral Interface">
+                <peripheral name="SPI_W0" start="0x40090200" size="0x00000000"/>
+                <peripheral name="SPI_W1" start="0x40090300" size="0x00000000"/>
+            </group>
+            <group name="UART_W" start="0x40000000" size="0x00000000" info="UART Controller">
+                <peripheral name="UART_W0" start="0x40000000" size="0x00000000"/>
+                <peripheral name="UART_W1" start="0x40001000" size="0x00000000"/>
+                <peripheral name="UART_W2" start="0x40002000" size="0x00000000"/>
+            </group>
+            <peripheral name="HW_ACC" start="0x40032000" size="0x00000000" info=""/>
+            <peripheral name="APU_AUD" start="0x400e0400" size="0x00000000" info="APU AUD"/>
+            <peripheral name="APU_DSP" start="0x400e0800" size="0x00000000" info="APU DSP"/>
+            <peripheral name="ADC_W" start="0x40090500" size="0x00000000" info="Auxillary ADC"/>
+            <peripheral name="CRG_APU" start="0x400e0000" size="0x00000000" info="CRG APU"/>
+            <peripheral name="CRG_COM" start="0x400c0200" size="0x00000000" info="CRG COM"/>
+            <peripheral name="CRG_PER" start="0x40090400" size="0x00000000" info="CRG PER"/>
+            <peripheral name="CRG_TOP" start="0x400c0000" size="0x00000000" info="CRG Top"/>
+            <peripheral name="CACHE" start="0x0e010000" size="0x00000000" info="Cache"/>
+            <peripheral name="CHIP_VERSION" start="0x40070200" size="0x00000100" info="Chip Version"/>
+            <peripheral name="CLKCAL_BIF" start="0x40090600" size="0x00000000" info="Clock Calibration Battery Interface"/>
+            <peripheral name="CC312" start="0x400f0000" size="0x00000000" info="CryptoCell-312"/>
+            <peripheral name="DCACHE" start="0x21000000" size="0x00000000" info="Data Cache"/>
+            <peripheral name="DAI" start="0x400e0900" size="0x00000000" info="Digital Audio Interface"/>
+            <peripheral name="FPLL" start="0x400c0300" size="0x00000000" info="Fractional Phase Locked Loop"/>
+            <peripheral name="GPREG" start="0x40070300" size="0x00000000" info="General-Purpose Registers"/>
+            <peripheral name="EXT_IRQ_W" start="0x400b0000" size="0x00000100" info="Interrupt Controller Unit"/>
+            <peripheral name="KDMA" start="0x40070a00" size="0x00000000" info="Kernel DMA"/>
+            <peripheral name="MEMCTRL" start="0x400b0800" size="0x00000000" info="Memory Controller"/>
+            <peripheral name="OQSPIF" start="0x29000000" size="0x00000000" info="Octa/Quad Serial  Peripheral Interface"/>
+            <peripheral name="OTPC" start="0x400f3000" size="0x00000000" info="One Time Programmable Controller"/>
+            <peripheral name="PSK" start="0x40031000" size="0x00000000" info="Phase Shift Keying"/>
+            <peripheral name="QSPI_W" start="0x22000000" size="0x00000000" info="Quad SPI Controller"/>
+            <peripheral name="RTC" start="0x40038000" size="0x00000000" info="Realtime Clock"/>
+            <peripheral name="RETMEMCTRL" start="0x400b0900" size="0x00000000" info="Retention Memory Controller"/>
+            <peripheral name="SDEMMC_W" start="0x40011000" size="0x00000000" info="SD/EMMC Host Interface"/>
+            <peripheral name="SRC_FIFO_IF" start="0x40003000" size="0x00000000" info="Sampling Rate Converter FIFO Interface"/>
+            <peripheral name="SRC_IF" start="0x400e0c00" size="0x00000000" info="Sampling Rate Converter Interface"/>
+            <peripheral name="SDIO" start="0x40010000" size="0x00000000" info="Secure Digital Input Output"/>
+            <peripheral name="SYSBUS_ICM" start="0x40070400" size="0x00000000" info="System Bus Integrity Check Monitor"/>
+            <peripheral name="SYSBUS" start="0x2f000000" size="0x00000000" info="System Bus"/>
+            <peripheral name="WDOG_W" start="0x400c0700" size="0x00000000" info="System Watchdog"/>
+            <peripheral name="TDES" start="0x40030000" size="0x00000000" info="Triple Data Encryption Standard"/>
+        </peripherals>
+    </resources>
+</rzone>

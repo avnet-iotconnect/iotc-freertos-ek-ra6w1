@@ -28,7 +28,7 @@
 #include "mbedtls/ssl.h"
 
 #include "iotc_https.h"
-
+#include "iotcl_certs.h"
 
 /* Forward declared in the FSP; provides DNS name resolution. */
 extern char *dns_A_Query(char *domain_name, unsigned long wait_option);
@@ -345,8 +345,8 @@ int http_client_request(const char           *url,
      * lifetime of the request -- s_iotc_https_root_ca_pem is static. */
     if (request.insecure == pdTRUE)
     {
-        request.https_conf.ca          = (uint8_t *)s_iotc_https_root_ca_pem;
-        request.https_conf.ca_len      = sizeof(s_iotc_https_root_ca_pem); /* includes NUL */
+        request.https_conf.ca          = (u8_t *)IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2;
+        request.https_conf.ca_len      = strlen(IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2) + 1; /* includes NUL */
         request.https_conf.auth_mode   = MBEDTLS_SSL_VERIFY_REQUIRED;
         request.https_conf.sni         = request.hostname;
         request.https_conf.sni_len     = (int)strlen(request.hostname);

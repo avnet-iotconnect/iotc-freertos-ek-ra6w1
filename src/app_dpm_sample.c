@@ -2262,9 +2262,9 @@ static void aws_dpm_app_init(void)
 }
 
 static void aws_dpm_app_connect(app_dpm_info_rtm *_rtmData) {
-
+	return;
 }
-static void iotc_app_connect(app_dpm_info_rtm *_rtmData)
+static void iotc_app_connect(void)
 {
     int result = iotc_init();
     if (result != 0) {
@@ -2824,7 +2824,7 @@ static void DPM_App_Main(UINT32 _data, UINT32 _rtmData, DM_NOTI _status)
             awsiot_app_print_elapse_time_ms("[%s:%d]", __func__, __LINE__);
             IOT_INFO("[%s] DM_NEED_CONNECTION", __func__)
             //aws_dpm_app_connect(rtmData);
-            iotc_app_connect(rtmData);
+            iotc_app_connect();
         }
         break;
         case DM_CHECK_RECV:

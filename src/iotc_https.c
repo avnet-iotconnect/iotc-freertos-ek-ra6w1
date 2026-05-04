@@ -1,20 +1,8 @@
 /*
  * iotc_https.c
- *
- * Wrappers around the Renesas FSP HTTPS client (rm_https_w) and lwIP DNS.
- *
- * Provides:
- *   - get_host_address()    : DNS name -> IPv4 string (uses dns_A_Query()).
- *   - http_client_request() : one-shot HTTP/HTTPS request using the
- *                             g_https_w driver instance.
- *
- * The implementation opens its own https_w control block, performs the
- * request, waits (via task notification) for the asynchronous callback
- * to signal completion, and then closes the driver.
  */
 
 #include <string.h>
-#include <stdio.h>
 #include <ctype.h>
 #include <stdint.h>
 
@@ -30,7 +18,7 @@
 #include "iotc_https.h"
 #include "iotcl_certs.h"
 
-/* Forward declared in the FSP; provides DNS name resolution. */
+// Forward declared in the FSP; provides DNS name resolution.
 extern char *dns_A_Query(char *domain_name, unsigned long wait_option);
 
 #ifndef IOTC_HTTPS_DEFAULT_IFACE
@@ -57,70 +45,62 @@ extern char *dns_A_Query(char *domain_name, unsigned long wait_option);
 #define IOTC_HTTPS_TLS_OUTGOING_LEN    (1024U * 4U)
 #endif
 
-/* Initial / growth size for the response buffer (bytes). */
+// Initial and growth size for the response buffer in bytes.
 #ifndef IOTC_HTTPS_RESP_INITIAL_CAP
 #define IOTC_HTTPS_RESP_INITIAL_CAP    (2U * 1024U)
 #endif
 
-/* Hard cap on the response buffer size to prevent unbounded growth. */
+// Hard cap on the response buffer size to prevent unbounded growth.
 #ifndef IOTC_HTTPS_RESP_MAX_CAP
 #define IOTC_HTTPS_RESP_MAX_CAP        (64U * 1024U)
 #endif
 
-/* HTTPS driver instance shared with this module. */
+// HTTPS driver instance shared with this module.
 extern const https_api_t g_https_w;
 
-/* Local control block / config used for one-shot requests. */
+// Local control block and state used for one-shot requests.
 static https_w_instance_ctrl_t s_iotc_https_ctrl;
-static TaskHandle_t            s_iotc_https_waiter = NULL;
-static volatile int            s_iotc_https_result = 0;     /* +1=ok, -1=err */
-static volatile uint32_t       s_iotc_https_httpc_result = 0; /* httpc_result_t */
-static volatile int            s_iotc_https_err = 0;          /* lwIP err_t */
+static TaskHandle_t s_iotc_https_waiter = NULL;
+static volatile int s_iotc_https_result = 0; // +1 = ok, -1 = err.
+static volatile uint32_t s_iotc_https_httpc_result = 0; // httpc_result_t.
+static volatile int s_iotc_https_err = 0; // lwIP err_t.
 
-/* Response capture state, valid for the duration of one request. */
-static char   *s_iotc_https_resp_buf = NULL;
-static size_t  s_iotc_https_resp_len = 0U;
-static size_t  s_iotc_https_resp_cap = 0U;
-static bool    s_iotc_https_resp_overflow = false;
+// Response capture state, valid for the duration of one request.
+static char *s_iotc_https_resp_buf = NULL;
+static size_t s_iotc_https_resp_len = 0U;
+static size_t s_iotc_https_resp_cap = 0U;
+static bool s_iotc_https_resp_overflow = false;
 
-/* Append @p len bytes from @p data into the response buffer, growing it as
- * needed (up to IOTC_HTTPS_RESP_MAX_CAP). Sets the overflow flag if the
- * cap or an allocation failure prevents storing the data. */
-static void iotc_https_resp_append(const void *data, size_t len)
-{
-    if (data == NULL || len == 0U || s_iotc_https_resp_overflow)
-    {
+/* Append len bytes from data into the response buffer, growing it as needed
+ * up to IOTC_HTTPS_RESP_MAX_CAP. The overflow flag records cap hits or
+ * allocation failures so the caller can map that to one error path. */
+static void iotc_https_resp_append(const void *data, size_t len) {
+    if (data == NULL || len == 0U || s_iotc_https_resp_overflow) {
         return;
     }
 
-    /* Need room for new bytes plus a trailing NUL. */
+    // Need room for new bytes plus a trailing NUL.
     size_t needed = s_iotc_https_resp_len + len + 1U;
-    if (needed > s_iotc_https_resp_cap)
-    {
+    if (needed > s_iotc_https_resp_cap) {
         size_t new_cap = (s_iotc_https_resp_cap == 0U) ? IOTC_HTTPS_RESP_INITIAL_CAP
                                                        : s_iotc_https_resp_cap;
-        while (new_cap < needed)
-        {
+        while (new_cap < needed) {
             new_cap *= 2U;
         }
-        if (new_cap > IOTC_HTTPS_RESP_MAX_CAP)
-        {
+        if (new_cap > IOTC_HTTPS_RESP_MAX_CAP) {
             new_cap = IOTC_HTTPS_RESP_MAX_CAP;
         }
-        if (new_cap < needed)
-        {
+        if (new_cap < needed) {
             s_iotc_https_resp_overflow = true;
             return;
         }
 
         char *new_buf = (char *)pvPortMalloc(new_cap);
-        if (new_buf == NULL)
-        {
+        if (new_buf == NULL) {
             s_iotc_https_resp_overflow = true;
             return;
         }
-        if (s_iotc_https_resp_buf != NULL)
-        {
+        if (s_iotc_https_resp_buf != NULL) {
             memcpy(new_buf, s_iotc_https_resp_buf, s_iotc_https_resp_len);
             vPortFree(s_iotc_https_resp_buf);
         }
@@ -133,21 +113,16 @@ static void iotc_https_resp_append(const void *data, size_t len)
     s_iotc_https_resp_buf[s_iotc_https_resp_len] = '\0';
 }
 
-/*-----------------------------------------------------------*/
-
-static void iotc_https_callback(https_callback_args_t *p_args)
-{
-    if (p_args == NULL)
-    {
+static void iotc_https_callback(https_callback_args_t *p_args) {
+    if (p_args == NULL) {
         return;
     }
 
-    switch (p_args->event)
-    {
-        case HTTPS_EVENT_CLIENT_RECVED:           /* raw body chunk */
-        case HTTPS_EVENT_CLIENT_RECVED_DECODED:   /* de-chunked body chunk */
+    switch (p_args->event) {
+        case HTTPS_EVENT_CLIENT_RECVED:         // Raw body chunk.
+        case HTTPS_EVENT_CLIENT_RECVED_DECODED: // De-chunked body chunk.
         {
-            iotc_https_resp_append(p_args->payload, (size_t)p_args->len);
+            iotc_https_resp_append(p_args->payload, (size_t) p_args->len);
             break;
         }
 
@@ -155,12 +130,11 @@ static void iotc_https_callback(https_callback_args_t *p_args)
         {
             int8_t err = (p_args->p_param != NULL) ? *(int8_t *)p_args->p_param : -1;
             uint32_t httpc_result = (p_args->payload != NULL)
-                                  ? *(uint32_t *)p_args->payload : 0xFFFFFFFFU;
+                                    ? *(uint32_t *)p_args->payload : 0xFFFFFFFFU;
             s_iotc_https_httpc_result = httpc_result;
-            s_iotc_https_err          = (int)err;
+            s_iotc_https_err = (int) err;
             s_iotc_https_result       = (err == 0 && httpc_result == 0) ? 1 : -1;
-            if (s_iotc_https_waiter != NULL)
-            {
+            if (s_iotc_https_waiter != NULL) {
                 xTaskNotifyGive(s_iotc_https_waiter);
             }
             break;
@@ -168,12 +142,10 @@ static void iotc_https_callback(https_callback_args_t *p_args)
 
         case HTTPS_EVENT_CLIENT_GET_DONE:
         {
-            if (s_iotc_https_result == 0)
-            {
+            if (s_iotc_https_result == 0) {
                 s_iotc_https_result = 1;
             }
-            if (s_iotc_https_waiter != NULL)
-            {
+            if (s_iotc_https_waiter != NULL) {
                 xTaskNotifyGive(s_iotc_https_waiter);
             }
             break;
@@ -184,111 +156,64 @@ static void iotc_https_callback(https_callback_args_t *p_args)
     }
 }
 
-static const https_cfg_t s_iotc_https_cfg =
-{
+static const https_cfg_t s_iotc_https_cfg = {
     .p_callback = iotc_https_callback,
-    .p_context  = NULL,
-    .p_extend   = NULL,
+    .p_context = NULL,
+    .p_extend = NULL,
 };
-
-/*-----------------------------------------------------------*/
-
-BaseType_t get_host_address(const char *hostname,
-                            char       *ipstr,
-                            size_t      ipstr_len,
-                            uint32_t    timeout_ms)
-{
-    if (hostname == NULL || ipstr == NULL || ipstr_len < 16U)
-    {
-        return pdFAIL;
-    }
-
-    /* dns_A_Query takes a non-const char *. */
-    char *resolved = dns_A_Query((char *)hostname, (unsigned long)timeout_ms);
-    if (resolved == NULL || resolved[0] == '\0')
-    {
-        printf("get_host_address: failed to resolve \"%s\"\n", hostname);
-        return pdFAIL;
-    }
-
-    strncpy(ipstr, resolved, ipstr_len - 1U);
-    ipstr[ipstr_len - 1U] = '\0';
-    return pdPASS;
-}
-
-/*-----------------------------------------------------------*/
 
 /* Parse "http(s)://host[:port]/path" into a pre-zeroed http_client_request_t.
  * rm_https_w ultimately passes req->path into httpc_create_request_string(),
- * which expects the original absolute URL form rather than only the path.
- * Returns 0 on success, -1 on failure. */
-static int iotc_https_parse_url(const char            *url,
-                                http_client_request_t *req)
-{
-    if (url == NULL || req == NULL)
-    {
+ * which expects the original absolute URL form rather than only the path. */
+static int iotc_https_parse_url(const char *url, http_client_request_t *req) {
+    if (url == NULL || req == NULL) {
         return -1;
     }
 
     const char *p = url;
 
-    /* scheme */
-    if (strncasecmp(p, "https://", 8) == 0)
-    {
-        req->insecure = pdTRUE;          /* "insecure" field == "is TLS" in this driver */
-        req->port     = HTTPS_SERVER_PORT;
+    // The driver uses the "insecure" field to mean TLS-enabled.
+    if (strncasecmp(p, "https://", 8) == 0) {
+        req->insecure = pdTRUE;
+        req->port = HTTPS_SERVER_PORT;
         p += 8;
-    }
-    else if (strncasecmp(p, "http://", 7) == 0)
-    {
+    } else if (strncasecmp(p, "http://", 7) == 0) {
         req->insecure = pdFALSE;
-        req->port     = HTTP_SERVER_PORT;
+        req->port = HTTP_SERVER_PORT;
         p += 7;
-    }
-    else
-    {
-        printf("iotc_https: unsupported scheme in URL \"%s\"\n", url);
+    } else {
         return -1;
     }
 
-    /* host[:port] */
+    // Parse host[:port].
     const char *host_start = p;
-    while (*p && *p != ':' && *p != '/')
-    {
+    while (*p && *p != ':' && *p != '/') {
         p++;
     }
 
-    size_t host_len = (size_t)(p - host_start);
-    if (host_len == 0U || host_len >= HTTPC_MAX_HOSTNAME_LEN)
-    {
-        printf("iotc_https: invalid hostname in URL\n");
+    size_t host_len = (size_t) (p - host_start);
+    if (host_len == 0U || host_len >= HTTPC_MAX_HOSTNAME_LEN) {
         return -1;
     }
     memcpy(req->hostname, host_start, host_len);
     req->hostname[host_len] = '\0';
 
-    /* optional :port */
-    if (*p == ':')
-    {
+    if (*p == ':') {
         p++;
         uint32_t port = 0U;
-        while (isdigit((unsigned char)*p))
-        {
-            port = (port * 10U) + (uint32_t)(*p - '0');
+        while (isdigit((unsigned char) *p)) {
+            port = (port * 10U) + (uint32_t) (*p - '0');
             p++;
         }
-        if (port > 0U && port < 65536U)
-        {
+        if (port > 0U && port < 65536U) {
             req->port = port;
         }
     }
 
-    /* Preserve the absolute URL in req->path for the downstream HTTP client. */
+    // Preserve the absolute URL in req->path for the downstream HTTP client.
     {
         size_t url_len = strlen(url);
-        if (url_len >= HTTPC_MAX_PATH_LEN)
-        {
-            printf("iotc_https: URL too long\n");
+        if (url_len >= HTTPC_MAX_PATH_LEN) {
             return -1;
         }
         memcpy(req->path, url, url_len);
@@ -298,46 +223,39 @@ static int iotc_https_parse_url(const char            *url,
     return 0;
 }
 
-/*-----------------------------------------------------------*/
-
-void http_client_response_free(char *resp)
-{
-    if (resp != NULL)
-    {
+void http_client_response_free(char *resp) {
+    if (resp != NULL) {
         vPortFree(resp);
     }
 }
 
-int http_client_request(const char           *url,
-                        https_client_opcode_t op_code,
-                        const void           *body,
-                        size_t                body_len,
-                        char                **resp_out,
-                        size_t               *resp_len_out)
-{
-    fsp_err_t              err;
-    http_client_request_t  request;
+int http_client_request(
+    const char *url,
+    https_client_opcode_t op_code,
+    const void *body,
+    size_t body_len,
+    char **resp_out,
+    size_t *resp_len_out
+) {
+    fsp_err_t err;
+    http_client_request_t request;
 
     if (resp_out != NULL)     { *resp_out = NULL; }
     if (resp_len_out != NULL) { *resp_len_out = 0U; }
 
-    if (url == NULL)
-    {
-        return (int)FSP_ERR_INVALID_ARGUMENT;
+    if (url == NULL) {
+        return (int) FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* Body sanity check for write methods. */
+    // Body sanity check for write methods.
     if (op_code == HTTP_CLIENT_OPCODE_PUT  ||
         op_code == HTTP_CLIENT_OPCODE_POST ||
-        op_code == HTTP_CLIENT_OPCODE_PATCH)
-    {
-        if (body == NULL || body_len == 0U)
-        {
-            return (int)FSP_ERR_INVALID_ARGUMENT;
+        op_code == HTTP_CLIENT_OPCODE_PATCH) {
+        if (body == NULL || body_len == 0U) {
+            return (int) FSP_ERR_INVALID_ARGUMENT;
         }
-        if (body_len > HTTPC_MAX_REQ_DATA)
-        {
-            return (int)FSP_ERR_INVALID_ARGUMENT;
+        if (body_len > HTTPC_MAX_REQ_DATA) {
+            return (int) FSP_ERR_INVALID_ARGUMENT;
         }
     }
 
@@ -345,143 +263,116 @@ int http_client_request(const char           *url,
     request.op_code = op_code;
     request.iface   = IOTC_HTTPS_DEFAULT_IFACE;
 
-    if (iotc_https_parse_url(url, &request) != 0)
-    {
-        return (int)FSP_ERR_INVALID_ARGUMENT;
+    if (iotc_https_parse_url(url, &request) != 0) {
+        return (int) FSP_ERR_INVALID_ARGUMENT;
     }
 
-    /* For HTTPS, attach the built-in root CA and enable verification +
-     * SNI. The driver memcpy()s request.https_conf into its internal
-     * httpc_secure_connection_t, but it stores the pointer to the PEM
-     * (not a copy of the bytes), so the PEM must remain valid for the
-     * lifetime of the request -- s_iotc_https_root_ca_pem is static. */
-    if (request.insecure == pdTRUE)
-    {
-        request.https_conf.ca          = (u8_t *)IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2;
-        request.https_conf.ca_len      = strlen(IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2) + 1; /* includes NUL */
-        request.https_conf.auth_mode   = MBEDTLS_SSL_VERIFY_REQUIRED;
-        request.https_conf.sni         = request.hostname;
-        request.https_conf.sni_len     = (int)strlen(request.hostname);
+    /* For HTTPS, the driver copies the https_conf struct but keeps pointers
+     * to the PEM and SNI strings, so those buffers must stay valid for the
+     * full request lifetime. */
+    if (request.insecure == pdTRUE) {
+        request.https_conf.ca = (u8_t *) IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2;
+        request.https_conf.ca_len = strlen(IOTCL_CERT_GODADDY_SECURE_SERVER_CERTIFICATE_G2) + 1; // Includes NUL.
+        request.https_conf.auth_mode = MBEDTLS_SSL_VERIFY_REQUIRED;
+        request.https_conf.sni = request.hostname;
+        request.https_conf.sni_len = (int) strlen(request.hostname);
         request.https_conf.tls_ver_min = IOTC_HTTPS_TLS_VER_MIN;
         request.https_conf.tls_ver_max = IOTC_HTTPS_TLS_VER_MAX;
         request.https_conf.incoming_len = IOTC_HTTPS_TLS_INCOMING_LEN;
         request.https_conf.outgoing_len = IOTC_HTTPS_TLS_OUTGOING_LEN;
     }
 
-    if (body != NULL && body_len > 0U)
-    {
+    if (body != NULL && body_len > 0U) {
         memcpy(request.data, body, body_len);
     }
 
-    /* Prepare for asynchronous completion notification. */
-    s_iotc_https_waiter       = xTaskGetCurrentTaskHandle();
-    s_iotc_https_result       = 0;
+    // Prepare for asynchronous completion notification.
+    s_iotc_https_waiter = xTaskGetCurrentTaskHandle();
+    s_iotc_https_result = 0;
     s_iotc_https_httpc_result = 0;
-    s_iotc_https_err          = 0;
-    /* Drain any stale notification value. */
-    (void)ulTaskNotifyTake(pdTRUE, 0);
+    s_iotc_https_err = 0;
+    ulTaskNotifyTake(pdTRUE, 0);
 
-    /* Reset response capture state. Only accumulate when caller wants it. */
-    s_iotc_https_resp_buf      = NULL;
-    s_iotc_https_resp_len      = 0U;
-    s_iotc_https_resp_cap      = 0U;
-    s_iotc_https_resp_overflow = (resp_out == NULL);  /* skip capture if not wanted */
+    // Reset response capture state. Skip capture entirely when the caller does not want a body.
+    s_iotc_https_resp_buf = NULL;
+    s_iotc_https_resp_len = 0U;
+    s_iotc_https_resp_cap = 0U;
+    s_iotc_https_resp_overflow = (resp_out == NULL);
 
     err = g_https_w.open(&s_iotc_https_ctrl, &s_iotc_https_cfg);
-    if (err != FSP_SUCCESS)
-    {
-        printf("iotc_https: open failed (err=%d)\n", (int)err);
+    if (err != FSP_SUCCESS) {
         s_iotc_https_waiter = NULL;
-        return (int)err;
+        return (int) err;
     }
 
     err = g_https_w.clientSendRequest(&s_iotc_https_ctrl, &request);
-    if (err != FSP_SUCCESS)
-    {
-        printf("iotc_https: clientSendRequest failed (err=%d)\n", (int)err);
-        (void)g_https_w.close(&s_iotc_https_ctrl);
+    if (err != FSP_SUCCESS) {
+        g_https_w.close(&s_iotc_https_ctrl);
         s_iotc_https_waiter = NULL;
-        if (s_iotc_https_resp_buf != NULL)
-        {
+        if (s_iotc_https_resp_buf != NULL) {
             vPortFree(s_iotc_https_resp_buf);
             s_iotc_https_resp_buf = NULL;
         }
-        return (int)err;
+        return (int) err;
     }
 
-    /* Wait for the driver to invoke iotc_https_callback(). */
+    // Wait for the driver to invoke iotc_https_callback().
     bool timed_out = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(IOTC_HTTPS_REQUEST_TIMEOUT_MS)) == 0U);
 
-    (void)g_https_w.close(&s_iotc_https_ctrl);
+    g_https_w.close(&s_iotc_https_ctrl);
     s_iotc_https_waiter = NULL;
 
-    /* Detach the captured buffer from the static state so that subsequent
-     * requests don't touch it. */
-    char  *captured_buf = s_iotc_https_resp_buf;
+    // Detach the captured buffer from the static state so later requests do not touch it.
+    char *captured_buf = s_iotc_https_resp_buf;
     size_t captured_len = s_iotc_https_resp_len;
-    bool   captured_ovf = s_iotc_https_resp_overflow;
+    bool captured_ovf = s_iotc_https_resp_overflow;
     s_iotc_https_resp_buf = NULL;
     s_iotc_https_resp_len = 0U;
     s_iotc_https_resp_cap = 0U;
 
-    if (timed_out)
-    {
-        printf("iotc_https: request timed out\n");
+    if (timed_out) {
         if (captured_buf != NULL) { vPortFree(captured_buf); }
-        return (int)FSP_ERR_TIMEOUT;
+        return (int) FSP_ERR_TIMEOUT;
     }
 
-    if (s_iotc_https_result < 0)
-    {
-        /* httpc_result_t: 0=OK 1=UNKNOWN 2=CONNECT 3=HOSTNAME 4=CLOSED
-         *                 5=TIMEOUT 6=SVR_RESP 7=MEM 8=LOCAL_ABORT 9=CONTENT_LEN
-         * err is the lwIP err_t (negative = lwIP error). */
-        const char *result_str;
-        fsp_err_t   mapped_err;
+    if (s_iotc_https_result < 0) {
+        /* httpc_result_t: 0 = OK, 1 = UNKNOWN, 2 = CONNECT, 3 = HOSTNAME,
+         * 4 = CLOSED, 5 = TIMEOUT, 6 = SVR_RESP, 7 = MEM,
+         * 8 = LOCAL_ABORT, 9 = CONTENT_LEN. */
+        fsp_err_t mapped_err;
 
         switch (s_iotc_https_httpc_result)
         {
-            case 0:  result_str = "OK";          mapped_err = FSP_ERR_INVALID_STATE;   break;
-            case 1:  result_str = "UNKNOWN";     mapped_err = FSP_ERR_INVALID_STATE;   break;
-            case 2:  result_str = "CONNECT";     mapped_err = FSP_ERR_ABORTED;         break;
-            case 3:  result_str = "HOSTNAME";    mapped_err = FSP_ERR_INVALID_ADDRESS; break;
-            case 4:  result_str = "CLOSED";      mapped_err = FSP_ERR_ABORTED;         break;
-            case 5:  result_str = "TIMEOUT";     mapped_err = FSP_ERR_TIMEOUT;         break;
-            case 6:  result_str = "SVR_RESP";    mapped_err = FSP_ERR_INVALID_DATA;    break;
-            case 7:  result_str = "MEM";         mapped_err = FSP_ERR_OUT_OF_MEMORY;   break;
-            case 8:  result_str = "LOCAL_ABORT"; mapped_err = FSP_ERR_ABORTED;         break;
-            case 9:  result_str = "CONTENT_LEN"; mapped_err = FSP_ERR_INVALID_DATA;    break;
-            default: result_str = "?";           mapped_err = FSP_ERR_INVALID_STATE;   break;
+            case 0:  mapped_err = FSP_ERR_INVALID_STATE;   break;
+            case 1:  mapped_err = FSP_ERR_INVALID_STATE;   break;
+            case 2:  mapped_err = FSP_ERR_ABORTED;         break;
+            case 3:  mapped_err = FSP_ERR_INVALID_ADDRESS; break;
+            case 4:  mapped_err = FSP_ERR_ABORTED;         break;
+            case 5:  mapped_err = FSP_ERR_TIMEOUT;         break;
+            case 6:  mapped_err = FSP_ERR_INVALID_DATA;    break;
+            case 7:  mapped_err = FSP_ERR_OUT_OF_MEMORY;   break;
+            case 8:  mapped_err = FSP_ERR_ABORTED;         break;
+            case 9:  mapped_err = FSP_ERR_INVALID_DATA;    break;
+            default: mapped_err = FSP_ERR_INVALID_STATE;   break;
         }
-
-        printf("iotc_https: request failed: %s (httpc_result=%lu, lwip_err=%d)\n",
-               result_str,
-               (unsigned long)s_iotc_https_httpc_result,
-               s_iotc_https_err);
 
         if (captured_buf != NULL) { vPortFree(captured_buf); }
-        return (int)mapped_err;
+        return (int) mapped_err;
     }
 
-    /* Hand the response buffer back to the caller (or discard it). */
-    if (resp_out != NULL)
-    {
-        if (captured_ovf && captured_buf == NULL)
-        {
-            printf("iotc_https: response too large or out of memory\n");
-            return (int)FSP_ERR_OUT_OF_MEMORY;
+    // Hand the response buffer back to the caller or discard it.
+    if (resp_out != NULL) {
+        if (captured_ovf && captured_buf == NULL) {
+            return (int) FSP_ERR_OUT_OF_MEMORY;
         }
         *resp_out = captured_buf;
-        if (resp_len_out != NULL)
-        {
+        if (resp_len_out != NULL) {
             *resp_len_out = captured_len;
         }
-    }
-    else if (captured_buf != NULL)
-    {
-        /* Defensive: caller didn't ask for response but we captured one. */
+    } else if (captured_buf != NULL) {
+        // Defensive: caller did not ask for a response but one was captured.
         vPortFree(captured_buf);
     }
 
-    return (int)FSP_SUCCESS;
+    return (int) FSP_SUCCESS;
 }

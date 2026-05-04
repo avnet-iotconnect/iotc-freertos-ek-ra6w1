@@ -498,21 +498,15 @@ static TlsTransportStatus_t prvConnectToServerWithBackoffRetries(NetworkContext_
     xNetworkCredentials.pClientCertLabel = pcClientCertLabel;
     xNetworkCredentials.pPrivateKeyLabel = pcPrivateKeyLabel;
 #else //awsupgradeport[[::awsdpmwork
-    //xNetworkCredentials.pRootCa = (const unsigned char *)pal_app_get_cert_ca(AWS_IOT_ROOT_CA);
-    //xNetworkCredentials.rootCaSize = strlen((char *)xNetworkCredentials.pRootCa) + 1;
-    xNetworkCredentials.pRootCa = IOTCONNECT_ROOTCA;
-    xNetworkCredentials.rootCaSize = strlen(IOTCONNECT_ROOTCA) + 1;
-    //#ifdef AWS_IOT_CLIENT_CERT
-        //xNetworkCredentials.pClientCert = (const unsigned char *)pal_app_get_cert_cert(AWS_IOT_CLIENT_CERT);
-        //xNetworkCredentials.clientCertSize = strlen((char *)xNetworkCredentials.pClientCert) + 1;
-        //xNetworkCredentials.pPrivateKey = (const unsigned char *)pal_app_get_cert_key(AWS_IOT_CLIENT_PRIV_KEY);
-        //xNetworkCredentials.privateKeySize = strlen((char *)xNetworkCredentials.pPrivateKey) + 1;
-	//#endif
+    xNetworkCredentials.pRootCa = (const unsigned char *)pal_app_get_cert_ca(AWS_IOT_ROOT_CA);
+    xNetworkCredentials.rootCaSize = strlen((char *)xNetworkCredentials.pRootCa) + 1;
 
-    xNetworkCredentials.pClientCert = IOTCONNECT_DEVICE_CERT;
-    xNetworkCredentials.clientCertSize = strlen(IOTCONNECT_DEVICE_CERT) + 1;
-    xNetworkCredentials.pPrivateKey = IOTCONNECT_DEVICE_KEY;
-    xNetworkCredentials.privateKeySize = strlen(IOTCONNECT_DEVICE_KEY) + 1;
+    #ifdef AWS_IOT_CLIENT_CERT
+        xNetworkCredentials.pClientCert = (const unsigned char *)pal_app_get_cert_cert(AWS_IOT_CLIENT_CERT);
+        xNetworkCredentials.clientCertSize = strlen((char *)xNetworkCredentials.pClientCert) + 1;
+        xNetworkCredentials.pPrivateKey = (const unsigned char *)pal_app_get_cert_key(AWS_IOT_CLIENT_PRIV_KEY);
+        xNetworkCredentials.privateKeySize = strlen((char *)xNetworkCredentials.pPrivateKey) + 1;
+	#endif
 
 #endif //]]
 
@@ -548,8 +542,9 @@ static TlsTransportStatus_t prvConnectToServerWithBackoffRetries(NetworkContext_
         LogInfo(("Create a TCP connection to %s:%lu.",
         		 IOTCONNECT_HOST,
                  pal_app_get_broker_port(democonfigMQTT_BROKER_PORT)));
+
         xNetworkStatus = TLS_FreeRTOS_Connect(pxNetworkContext,
-                                              IOTCONNECT_HOST,
+        									  pal_app_get_broker_endpoint(democonfigMQTT_BROKER_ENDPOINT),
                                               (uint16_t)pal_app_get_broker_port(democonfigMQTT_BROKER_PORT),
                                               &xNetworkCredentials,
                                               mqttexampleTRANSPORT_SEND_RECV_TIMEOUT_MS,
@@ -1047,14 +1042,11 @@ BaseType_t xEstablishMqttSession(MQTTContext_t * pxMqttContext,
                 xConnectInfo.pClientIdentifier = democonfigCLIENT_IDENTIFIER;
                 xConnectInfo.clientIdentifierLength = (uint16_t)strlen(democonfigCLIENT_IDENTIFIER);
 #else //awsupgradeport[[::
-                //char *tmpRegisteredThing = getAppThingName();
-                char *tmpRegisteredThing = IOTCONNECT_DUID;
+                char *tmpRegisteredThing = getAppThingName();
                 if (tmpRegisteredThing)
                 {
-                    //xConnectInfo.pClientIdentifier = tmpRegisteredThing;
-                    //xConnectInfo.clientIdentifierLength = (uint16_t)strlen(tmpRegisteredThing);
-                    xConnectInfo.pClientIdentifier = IOTCONNECT_DUID;
-                    xConnectInfo.clientIdentifierLength = (uint16_t)strlen(IOTCONNECT_DUID);
+                    xConnectInfo.pClientIdentifier = tmpRegisteredThing;
+                    xConnectInfo.clientIdentifierLength = (uint16_t)strlen(tmpRegisteredThing);
                 }
                 else
                 {

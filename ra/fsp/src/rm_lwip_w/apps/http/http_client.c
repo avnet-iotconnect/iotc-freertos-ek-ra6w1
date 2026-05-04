@@ -593,9 +593,16 @@ httpc_tcp_connected(void *arg, struct altcp_pcb *pcb, err_t err)
   LWIP_UNUSED_ARG(pcb);
   LWIP_UNUSED_ARG(err);
 
+  printf("httpc_tcp_connected: req_len=%u state=%p\n",
+         (unsigned)(req->request ? req->request->len : 0U),
+         (void *)req);
+
   /* send request; last char is zero termination */
   r = altcp_write(req->pcb, req->request->payload, req->request->len - 1, TCP_WRITE_FLAG_COPY);
   if (r != ERR_OK) {
+     printf("httpc_tcp_connected: altcp_write failed err=%d req_len=%u\n",
+            r,
+            (unsigned)(req->request ? req->request->len : 0U));
      /* could not write the single small request -> fail, don't retry */
      return httpc_close(req, HTTPC_RESULT_ERR_MEM, 0, r);
   }
@@ -807,8 +814,8 @@ httpc_create_request_string(const httpc_connection_t *settings, const char* serv
 	if (q != NULL) {
 		q += strlen("://");
 		p = q;
-	} else	{
-		return 0;
+  } else	{
+    return 0;
 	}
 
 	if ((strstr(p, ":")) && (strstr(p, "@")))
@@ -838,7 +845,7 @@ httpc_create_request_string(const httpc_connection_t *settings, const char* serv
 		}
 	}
 
-	parse_uri = pvPortMalloc(strlen(q) + 1);
+  parse_uri = pvPortMalloc(strlen(q) + 1);
 	if (parse_uri != NULL) {
 		q = strstr(p, "/");
 		if (q != NULL) {
@@ -1028,6 +1035,15 @@ httpc_init_connection_common(httpc_state_t **connection, const httpc_connection_
     }
 
     if (req->tls_config == NULL) {
+      printf("httpc: tls config create failed (ca_len=%u, cert_len=%u, key_len=%u, auth=%u, tls=%u-%u, in=%u, out=%u)\n",
+             (unsigned) tls_settings->ca_len,
+             (unsigned) tls_settings->cert_len,
+             (unsigned) tls_settings->privkey_len,
+             (unsigned) tls_settings->auth_mode,
+             (unsigned) tls_settings->tls_ver_min,
+             (unsigned) tls_settings->tls_ver_max,
+             (unsigned) tls_settings->incoming_len,
+             (unsigned) tls_settings->outgoing_len);
       httpc_free_state(req);
       return ERR_VAL;
     }
@@ -1049,6 +1065,12 @@ httpc_init_connection_common(httpc_state_t **connection, const httpc_connection_
 
     req->pcb = altcp_tls_new(req->tls_config, IPADDR_TYPE_ANY);
     if (req->pcb == NULL) {
+      printf("httpc: altcp_tls_new failed (auth=%u, tls=%u-%u, in=%u, out=%u)\n",
+             (unsigned) tls_settings->auth_mode,
+             (unsigned) tls_settings->tls_ver_min,
+             (unsigned) tls_settings->tls_ver_max,
+             (unsigned) tls_settings->incoming_len,
+             (unsigned) tls_settings->outgoing_len);
       httpsc_free_state(req);
       httpc_free_state(req);
       return ERR_MEM;

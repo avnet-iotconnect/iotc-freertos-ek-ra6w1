@@ -6,7 +6,8 @@
 #ifndef APP_CONFIG_H
 #define APP_CONFIG_H
 
-#define IOTCONNECT_HOST    "a3etk4e19usyja-ats.iot.us-east-1.amazonaws.com"
+#define IOTCONNECT_CPID    ""
+#define IOTCONNECT_ENV     ""
 #define IOTCONNECT_DUID    ""
 
 #define IOTCONNECT_DEVICE_CERT \

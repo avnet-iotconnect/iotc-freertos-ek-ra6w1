@@ -100,6 +100,7 @@
 
 #include "app_config.h"
 #include "iotconnect.h"
+#include "iotc_https.h"
 
 
 #define USE_SHADOW_ONLY_ON_SLEEP_1_N_2      1   //define whether subscribe only shadow or not
@@ -2261,23 +2262,43 @@ static void aws_dpm_app_init(void)
     configASSERT(xJobMessageQueue != NULL);
 }
 
-static void aws_dpm_app_connect(app_dpm_info_rtm *_rtmData) {
+static void aws_dpm_app_connect(app_dpm_info_rtm *_rtmData)
+{
 	return;
 }
-static void iotc_app_connect(void)
-{
-    int result = iotc_init();
-    if (result != 0) {
-    	printf("iotc_init failed\n");
+
+static void testdata(void) {
+    DL_dpm_info_rtm *DL_data = NULL;
+    char tTemp[MAX_RTM_FLOAT_STRING] = {0, };
+    char tBat[MAX_RTM_FLOAT_STRING] = {0, };
+
+    DL_data = DL_dpm_info_get(DL_DATA_RTM_NAME);
+    if (DL_data == NULL)
+    {
+        printf("no Door Lock RTM data..\n");
+
+        return;
     }
 
-    /* Connect (with retry) is implemented in iotconnect.c. */
-    (void)iotc_mqtt_connect(prvEventCallback);
+    sprintf(tTemp, "%.6f", (double)DL_data->temperature);
+    sprintf(tBat, "%.6f", (double)DL_data->battery);
 
-	for (int i = 0; i< 50 ; i++) {
-		iotc_publish_telemetry();
-		vTaskDelay(portCONVERT_MS_2_TICKS(2000));
-	}
+    printf("aws_dpm_app_connect temperature: %s\n",
+           (uint32_t)DL_data->temperature == INIT_SENSOR_VAL_4B ? SENSOR_VAL_NOT_AVAILABLE : tTemp);
+    printf("aws_dpm_app_connect battery: %s\n",
+           (uint32_t)DL_data->battery == INIT_SENSOR_VAL_4B ? SENSOR_VAL_NOT_AVAILABLE : tBat);
+}
+
+static void iotc_app_connect(void)
+{
+	IotConnectClientConfig testconfig = {
+	  .env = IOTCONNECT_ENV,
+	  .cpid = IOTCONNECT_CPID,
+	  .duid = IOTCONNECT_DUID,
+	  .event_callback = prvEventCallback
+	};
+	iotconnect_sdk(&testconfig);
+
 
     /* ---- DEBUG: hard-pause here, block scheduler and interrupts so no
      *              other FreeRTOS task / ISR can take over. Remove when done. */

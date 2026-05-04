@@ -41,6 +41,22 @@ extern char *dns_A_Query(char *domain_name, unsigned long wait_option);
 #define IOTC_HTTPS_REQUEST_TIMEOUT_MS  (30U * 1000U)
 #endif
 
+#ifndef IOTC_HTTPS_TLS_VER_MIN
+#define IOTC_HTTPS_TLS_VER_MIN         MBEDTLS_SSL_VERSION_TLS1_2
+#endif
+
+#ifndef IOTC_HTTPS_TLS_VER_MAX
+#define IOTC_HTTPS_TLS_VER_MAX         MBEDTLS_SSL_VERSION_TLS1_2
+#endif
+
+#ifndef IOTC_HTTPS_TLS_INCOMING_LEN
+#define IOTC_HTTPS_TLS_INCOMING_LEN    (1024U * 20U)
+#endif
+
+#ifndef IOTC_HTTPS_TLS_OUTGOING_LEN
+#define IOTC_HTTPS_TLS_OUTGOING_LEN    (1024U * 4U)
+#endif
+
 /* Initial / growth size for the response buffer (bytes). */
 #ifndef IOTC_HTTPS_RESP_INITIAL_CAP
 #define IOTC_HTTPS_RESP_INITIAL_CAP    (2U * 1024U)
@@ -203,6 +219,8 @@ BaseType_t get_host_address(const char *hostname,
 /*-----------------------------------------------------------*/
 
 /* Parse "http(s)://host[:port]/path" into a pre-zeroed http_client_request_t.
+ * rm_https_w ultimately passes req->path into httpc_create_request_string(),
+ * which expects the original absolute URL form rather than only the path.
  * Returns 0 on success, -1 on failure. */
 static int iotc_https_parse_url(const char            *url,
                                 http_client_request_t *req)
@@ -265,22 +283,16 @@ static int iotc_https_parse_url(const char            *url,
         }
     }
 
-    /* path */
-    if (*p == '\0')
+    /* Preserve the absolute URL in req->path for the downstream HTTP client. */
     {
-        req->path[0] = '/';
-        req->path[1] = '\0';
-    }
-    else
-    {
-        size_t path_len = strlen(p);
-        if (path_len >= HTTPC_MAX_PATH_LEN)
+        size_t url_len = strlen(url);
+        if (url_len >= HTTPC_MAX_PATH_LEN)
         {
-            printf("iotc_https: path too long\n");
+            printf("iotc_https: URL too long\n");
             return -1;
         }
-        memcpy(req->path, p, path_len);
-        req->path[path_len] = '\0';
+        memcpy(req->path, url, url_len);
+        req->path[url_len] = '\0';
     }
 
     return 0;
@@ -350,8 +362,10 @@ int http_client_request(const char           *url,
         request.https_conf.auth_mode   = MBEDTLS_SSL_VERIFY_REQUIRED;
         request.https_conf.sni         = request.hostname;
         request.https_conf.sni_len     = (int)strlen(request.hostname);
-        request.https_conf.tls_ver_min = MBEDTLS_SSL_VERSION_TLS1_2;
-        request.https_conf.tls_ver_max = MBEDTLS_SSL_VERSION_TLS1_2;
+        request.https_conf.tls_ver_min = IOTC_HTTPS_TLS_VER_MIN;
+        request.https_conf.tls_ver_max = IOTC_HTTPS_TLS_VER_MAX;
+        request.https_conf.incoming_len = IOTC_HTTPS_TLS_INCOMING_LEN;
+        request.https_conf.outgoing_len = IOTC_HTTPS_TLS_OUTGOING_LEN;
     }
 
     if (body != NULL && body_len > 0U)
@@ -422,10 +436,31 @@ int http_client_request(const char           *url,
         /* httpc_result_t: 0=OK 1=UNKNOWN 2=CONNECT 3=HOSTNAME 4=CLOSED
          *                 5=TIMEOUT 6=SVR_RESP 7=MEM 8=LOCAL_ABORT 9=CONTENT_LEN
          * err is the lwIP err_t (negative = lwIP error). */
-        printf("iotc_https: request reported error (httpc_result=%lu, err=%d)\n",
-               (unsigned long)s_iotc_https_httpc_result, s_iotc_https_err);
+        const char *result_str;
+        fsp_err_t   mapped_err;
+
+        switch (s_iotc_https_httpc_result)
+        {
+            case 0:  result_str = "OK";          mapped_err = FSP_ERR_INVALID_STATE;   break;
+            case 1:  result_str = "UNKNOWN";     mapped_err = FSP_ERR_INVALID_STATE;   break;
+            case 2:  result_str = "CONNECT";     mapped_err = FSP_ERR_ABORTED;         break;
+            case 3:  result_str = "HOSTNAME";    mapped_err = FSP_ERR_INVALID_ADDRESS; break;
+            case 4:  result_str = "CLOSED";      mapped_err = FSP_ERR_ABORTED;         break;
+            case 5:  result_str = "TIMEOUT";     mapped_err = FSP_ERR_TIMEOUT;         break;
+            case 6:  result_str = "SVR_RESP";    mapped_err = FSP_ERR_INVALID_DATA;    break;
+            case 7:  result_str = "MEM";         mapped_err = FSP_ERR_OUT_OF_MEMORY;   break;
+            case 8:  result_str = "LOCAL_ABORT"; mapped_err = FSP_ERR_ABORTED;         break;
+            case 9:  result_str = "CONTENT_LEN"; mapped_err = FSP_ERR_INVALID_DATA;    break;
+            default: result_str = "?";           mapped_err = FSP_ERR_INVALID_STATE;   break;
+        }
+
+        printf("iotc_https: request failed: %s (httpc_result=%lu, lwip_err=%d)\n",
+               result_str,
+               (unsigned long)s_iotc_https_httpc_result,
+               s_iotc_https_err);
+
         if (captured_buf != NULL) { vPortFree(captured_buf); }
-        return (int)FSP_ERR_INVALID_STATE;
+        return (int)mapped_err;
     }
 
     /* Hand the response buffer back to the caller (or discard it). */

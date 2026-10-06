@@ -1,5 +1,19 @@
 /*
  * iotconnect.h
+ *
+ * /IOTCONNECT client for the EK-RA6W1 interactive demo.
+ *
+ * iotconnect_sdk() runs the whole device lifecycle: discovery and identity
+ * over HTTPS, MQTT connect, subscription to the command topic, periodic
+ * telemetry, button events, Wi-Fi access-point surveys and cloud-to-device
+ * commands. It reconnects on failure and only returns when a telemetry
+ * message limit is configured and reached.
+ *
+ * Commands understood (configure them in the device template):
+ *   led <on|off|toggle>      drive LED0
+ *   set-interval <ms>        change the telemetry period (1000..3600000)
+ *   scan                     run a Wi-Fi survey now and report it
+ *   reboot                   restart the board
  */
 
 #ifndef IOTCONNECT_H
@@ -25,22 +39,22 @@ typedef struct {
     const char *cpid;
     const char *duid;
     IotConnectConnectionType connection_type;
-    MQTTEventCallback_t event_callback;
-    uint32_t telemetry_count;
-    uint32_t telemetry_delay_ms;
+    uint32_t telemetry_count;          /* 0 = run forever */
+    uint32_t telemetry_delay_ms;       /* 0 = IOTCONNECT_SDK_PUBLISH_DELAY_MS */
+    uint32_t wifi_scan_interval_ms;    /* 0 = IOTCONNECT_WIFI_SCAN_INTERVAL_MS */
 } IotConnectClientConfig;
 
 
 // Run IoTConnect discovery and identity over HTTPS.
 int run_http_identity(const char *duid, const char *cpid, const char *env);
 
-// Build a telemetry payload and publish it via the iotc-c-lib.
+// Build a telemetry payload from the current board state and publish it.
 BaseType_t iotc_publish_telemetry(void);
 
-// Establish the MQTT session with retry logic.
-BaseType_t iotc_mqtt_connect(MQTTEventCallback_t eventCallback);
+// Establish the MQTT session. Returns pdPASS or pdFAIL; the caller retries.
+BaseType_t iotc_mqtt_connect(void);
 
-// Run IoTConnect init, discovery/identity, MQTT connect, and telemetry publish.
+// Run the demo: init, discovery/identity, MQTT connect, telemetry and command loop.
 int iotconnect_sdk(IotConnectClientConfig *c);
 
 #ifdef __cplusplus

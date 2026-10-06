@@ -1,0 +1,56 @@
+{
+  "code": "ra6w1demo",
+  "name": "RA6W1 Interactive Demo",
+  "authType": 2,
+  "messageVersion": "2.1",
+  "tag": "",
+  "isEdgeSupport": false,
+  "isIotEdgeEnable": false,
+  "dataFrequency": 5,
+  "description": "EK-RA6W1 /IOTCONNECT demo: LED control, button events, Wi-Fi link stats and nearby access-point survey.",
+  "attributes": [
+    { "name": "version",            "dataType": "STRING",  "unit": "",      "description": "Firmware version" },
+    { "name": "uptime_s",           "dataType": "INTEGER", "unit": "s",     "description": "Seconds since boot" },
+    { "name": "free_heap",          "dataType": "INTEGER", "unit": "bytes", "description": "FreeRTOS free heap" },
+    { "name": "min_free_heap",      "dataType": "INTEGER", "unit": "bytes", "description": "Lowest free heap since boot" },
+    { "name": "report_interval_ms", "dataType": "INTEGER", "unit": "ms",    "description": "Current telemetry period" },
+    { "name": "wifi_rssi",          "dataType": "INTEGER", "unit": "dBm",   "description": "Signal strength of the connected access point" },
+    { "name": "ip",                 "dataType": "STRING",  "unit": "",      "description": "Station IPv4 address" },
+    { "name": "mac",                "dataType": "STRING",  "unit": "",      "description": "Wi-Fi MAC address" },
+    { "name": "led",                "dataType": "BOOLEAN", "unit": "",      "description": "LED0 state" },
+    { "name": "button_count",       "dataType": "INTEGER", "unit": "",      "description": "Button presses since boot" },
+    { "name": "button_pressed",     "dataType": "BOOLEAN", "unit": "",      "description": "True on the report triggered by a press" },
+    { "name": "wifi_ap_count",      "dataType": "INTEGER", "unit": "",      "description": "Access points seen in the last survey" },
+    {
+      "name": "ap1", "dataType": "OBJECT", "description": "Strongest access point",
+      "attributes": [
+        { "name": "ssid",    "dataType": "STRING",  "unit": "" },
+        { "name": "rssi",    "dataType": "INTEGER", "unit": "dBm" },
+        { "name": "channel", "dataType": "INTEGER", "unit": "" }
+      ]
+    },
+    {
+      "name": "ap2", "dataType": "OBJECT", "description": "Second strongest access point",
+      "attributes": [
+        { "name": "ssid",    "dataType": "STRING",  "unit": "" },
+        { "name": "rssi",    "dataType": "INTEGER", "unit": "dBm" },
+        { "name": "channel", "dataType": "INTEGER", "unit": "" }
+      ]
+    },
+    {
+      "name": "ap3", "dataType": "OBJECT", "description": "Third strongest access point",
+      "attributes": [
+        { "name": "ssid",    "dataType": "STRING",  "unit": "" },
+        { "name": "rssi",    "dataType": "INTEGER", "unit": "dBm" },
+        { "name": "channel", "dataType": "INTEGER", "unit": "" }
+      ]
+    }
+  ],
+  "commands": [
+    { "name": "LED",          "command": "led",          "requiredParam": true,  "requiredAck": true, "isOTACommand": false, "description": "led on | led off | led toggle" },
+    { "name": "Set interval", "command": "set-interval", "requiredParam": true,  "requiredAck": true, "isOTACommand": false, "description": "set-interval <ms> (1000..3600000)" },
+    { "name": "Wi-Fi scan",   "command": "scan",         "requiredParam": false, "requiredAck": true, "isOTACommand": false, "description": "Survey nearby access points now" },
+    { "name": "Reboot",       "command": "reboot",       "requiredParam": false, "requiredAck": true, "isOTACommand": false, "description": "Restart the board" }
+  ],
+  "properties": []
+}

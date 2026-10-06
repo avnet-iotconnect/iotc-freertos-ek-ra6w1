@@ -163,12 +163,94 @@ The device stores the configuration in NVRAM and reboots.
 
 ---
 
-## 8. Project Layout (Quick Reference)
+## 8. The Interactive Demo
+
+Once connected, the firmware runs a two-way demo rather than a fixed burst of
+random numbers. It reconnects on failure and runs until reset.
+
+### 8.1 What the board reports
+
+Telemetry is published every 5 seconds by default, immediately on a button
+press, and after every Wi-Fi survey.
+
+| Attribute | Type | Meaning |
+|-----------|------|---------|
+| `version` | STRING | Firmware version (`IOTCONNECT_FW_VERSION`) |
+| `uptime_s` | INTEGER | Seconds since boot |
+| `free_heap`, `min_free_heap` | INTEGER | FreeRTOS heap statistics in bytes |
+| `report_interval_ms` | INTEGER | Current telemetry period |
+| `wifi_rssi` | INTEGER | Signal strength of the connected AP in dBm |
+| `ip`, `mac` | STRING | Station address information |
+| `led` | BOOLEAN | LED0 state |
+| `button_count` | INTEGER | Presses since boot |
+| `button_pressed` | BOOLEAN | True on the report triggered by a press |
+| `wifi_ap_count` | INTEGER | Access points seen in the last survey |
+| `ap1`, `ap2`, `ap3` | OBJECT | Strongest access points: `ssid`, `rssi`, `channel` |
+
+The Wi-Fi survey runs every 60 seconds by default (`IOTCONNECT_WIFI_SCAN_INTERVAL_MS`,
+0 disables it) and on the `scan` command. It is a blocking scan of a few
+seconds and is the RA6W1 equivalent of a beacon survey: the RA6W1 is a Wi-Fi 6
+part without a Bluetooth LE radio.
+
+### 8.2 Commands
+
+Send these from the /IOTCONNECT device page or a dashboard. Enable
+"receipt required" (acknowledgement) to see the result message.
+
+| Command | Effect |
+|---------|--------|
+| `led on` / `led off` / `led toggle` | Drive LED0 (P1_14) |
+| `set-interval <ms>` | Change the telemetry period, 1000 to 3600000 ms |
+| `scan` | Run a Wi-Fi survey now and report it |
+| `reboot` | Restart the board |
+
+### 8.3 Button wiring
+
+The EVK buttons are not hard-wired to MCU pins. Jumper **BTN2** to **P0_12**,
+the Wi-Fi SDK's default WPS button pin (see `custom_config_sdk.h`). The demo
+samples that pin every 20 ms rather than taking over the SDK's interrupt, so:
+
+- a **short tap** publishes a report with `button_pressed` set and increments
+  `button_count`;
+- a **hold of one second or more** still starts WPS, exactly as before.
+
+To use a different GPIO, define `IOTC_DEMO_BUTTON_PIN` to any free pin; it is
+then configured as an input with pull-up and must be switched to ground.
+
+### 8.4 Device template
+
+Import [iotconnect/ra6w1-demo-template.json](iotconnect/ra6w1-demo-template.json)
+as a device template in /IOTCONNECT, create a device from it, and copy the
+CPID, environment, unique ID and certificates into
+[src/app_config.h](src/app_config.h). The template uses self-signed device
+certificates (`authType` 2). Check the attribute list after import and adjust
+if your tenant's import format differs.
+
+### 8.5 Build-time options
+
+Override these in the project defines or at the top of
+[src/iotconnect.c](src/iotconnect.c):
+
+| Macro | Default | Purpose |
+|-------|---------|---------|
+| `IOTCONNECT_SDK_PUBLISH_DELAY_MS` | 5000 | Initial telemetry period |
+| `IOTCONNECT_WIFI_SCAN_INTERVAL_MS` | 60000 | Automatic survey period, 0 = off |
+| `IOTCONNECT_SDK_PUBLISH_COUNT` | 0 | Stop after N messages, 0 = forever |
+| `IOTCONNECT_FW_VERSION` | "2.0.0" | Reported version string |
+| `IOTC_DEMO_BUTTON_PIN` | `EXT_INTR2_PIN` | Button input |
+| `IOTC_DEMO_LED_PIN` | `LED0` | LED output |
+
+---
+
+## 9. Project Layout (Quick Reference)
 
 | Path | Purpose |
 |------|---------|
 | [src/](src/) | Application sources (entry points, IoT samples, provisioning) |
 | [src/app_config.h](src/app_config.h) | /IOTCONNECT credentials & app config |
+| [src/iotconnect.c](src/iotconnect.c) | /IOTCONNECT client: telemetry, commands, reconnect loop |
+| [src/iotc_demo_board.c](src/iotc_demo_board.c) | LED, button, Wi-Fi survey and system stats for the demo |
+| [iotconnect/](iotconnect/) | Device template for import into /IOTCONNECT |
 | [rafw_cfg/](rafw_cfg/) | FSP / AWS / ARM configuration headers |
 | [rafw_gen/](rafw_gen/) | Auto-generated FSP code (do not hand-edit) |
 | [ra/](ra/) | FSP, BSP, AWS, and 3rd-party RA libraries |

@@ -1,12 +1,16 @@
 /*
  * iotconnect.c
+ *
+ * /IOTCONNECT client for the EK-RA6W1 interactive demo. See iotconnect.h.
  */
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #include "FreeRTOS.h"
+#include "task.h"
 #include "portable.h"
 #include "projdefs.h"
 
@@ -30,11 +34,14 @@
 
 // iotc-c-lib
 #include "iotcl.h"
+#include "iotcl_c2d.h"
 #include "iotcl_telemetry.h"
+#include "iotcl_util.h"
 #include "iotcl_dra_discovery.h"
 #include "iotcl_dra_identity.h"
 
 #include "iotc_https.h"
+#include "iotc_demo_board.h"
 #include "iotconnect.h"
 
 #define IOTC_TOPIC_MAX_LEN          128
@@ -45,6 +52,13 @@
 
 #ifndef IOTC_MQTT_TRANSPORT_TIMEOUT_MS
 #define IOTC_MQTT_TRANSPORT_TIMEOUT_MS       AWS_IOT_RX_NO_CONNECT_TIMEOUT
+#endif
+
+// Receive timeout of the TLS socket. Keep it short: it bounds how long one
+// MQTT_ProcessLoop() call blocks and therefore how fast the demo loop reacts
+// to button presses and pending command acks.
+#ifndef IOTC_MQTT_RECV_TIMEOUT_MS
+#define IOTC_MQTT_RECV_TIMEOUT_MS            (250U)
 #endif
 
 #ifndef IOTC_MQTT_KEEP_ALIVE_SECONDS
@@ -88,27 +102,63 @@
 #define IOTC_DISCOVERY_SERVER        IOTCL_DRA_DEFAULT_DISCOVERY_HOST_AWS
 #endif
 
-// Number of consecutive connection failures before forcing sleep.
-#ifndef IOTC_MAX_RETRY_CNT_TO_SLEEP
-#define IOTC_MAX_RETRY_CNT_TO_SLEEP 3
+// Firmware version reported in telemetry.
+#ifndef IOTCONNECT_FW_VERSION
+#define IOTCONNECT_FW_VERSION "2.0.0"
 #endif
 
-#ifndef IOTCONNECT_DEFAULT_CPID
-#define IOTCONNECT_DEFAULT_CPID "97FF86E8728645E9B89F7B07977E4B15"
-#endif
-
+// 0 = publish forever.
 #ifndef IOTCONNECT_SDK_PUBLISH_COUNT
-#define IOTCONNECT_SDK_PUBLISH_COUNT 100U
+#define IOTCONNECT_SDK_PUBLISH_COUNT 0U
 #endif
 
 #ifndef IOTCONNECT_SDK_PUBLISH_DELAY_MS
-#define IOTCONNECT_SDK_PUBLISH_DELAY_MS 2000U
+#define IOTCONNECT_SDK_PUBLISH_DELAY_MS 5000U
 #endif
+
+// Period of the automatic Wi-Fi access-point survey. 0 disables it; the
+// "scan" command still works.
+#ifndef IOTCONNECT_WIFI_SCAN_INTERVAL_MS
+#define IOTCONNECT_WIFI_SCAN_INTERVAL_MS 60000U
+#endif
+
+#ifndef IOTCONNECT_MIN_PUBLISH_DELAY_MS
+#define IOTCONNECT_MIN_PUBLISH_DELAY_MS 1000U
+#endif
+
+#ifndef IOTCONNECT_MAX_PUBLISH_DELAY_MS
+#define IOTCONNECT_MAX_PUBLISH_DELAY_MS 3600000U
+#endif
+
+// How long each pass of the demo loop spends servicing MQTT.
+#ifndef IOTCONNECT_PROCESS_LOOP_SLICE_MS
+#define IOTCONNECT_PROCESS_LOOP_SLICE_MS 250U
+#endif
+
+// Reconnect backoff bounds.
+#ifndef IOTCONNECT_RECONNECT_MIN_DELAY_MS
+#define IOTCONNECT_RECONNECT_MIN_DELAY_MS 5000U
+#endif
+
+#ifndef IOTCONNECT_RECONNECT_MAX_DELAY_MS
+#define IOTCONNECT_RECONNECT_MAX_DELAY_MS 60000U
+#endif
+
+#define IOTC_PENDING_ACK_COUNT  4
+#define IOTC_ACK_MSG_LEN        96
 
 
 struct NetworkContext {
     TlsTransportParams_t *pxParams;
 };
+
+typedef struct {
+    bool in_use;
+    bool is_ota;
+    int status;
+    char *ack_id;
+    char message[IOTC_ACK_MSG_LEN];
+} IotcPendingAck;
 
 static MQTTContext_t xMqttContext;
 static bool xAppConnectionEstablished = false;
@@ -121,7 +171,22 @@ static uint32_t ulIotcGlobalEntryTimeMs;
 static MQTTPubAckInfo_t xIotcOutgoingPublishRecords[IOTC_MQTT_OUTGOING_RECORD_COUNT];
 static MQTTPubAckInfo_t xIotcIncomingPublishRecords[IOTC_MQTT_INCOMING_RECORD_COUNT];
 
+// Demo state shared between the MQTT callback and the main loop. Acks are
+// queued in the callback and flushed from the loop because publishing from
+// inside MQTT_ProcessLoop() would re-enter coreMQTT.
+static uint32_t s_telemetry_interval_ms = IOTCONNECT_SDK_PUBLISH_DELAY_MS;
+static uint32_t s_scan_interval_ms = IOTCONNECT_WIFI_SCAN_INTERVAL_MS;
+static volatile bool s_scan_requested = false;
+static volatile bool s_reboot_requested = false;
+static volatile bool s_publish_requested = false;
+static volatile bool s_session_broken = false;
+static IotcDemoApSurvey s_survey;
+static bool s_have_survey = false;
+static IotcPendingAck s_pending_acks[IOTC_PENDING_ACK_COUNT];
+
 static void iotc_mqtt_send_cb(const char *topic, const char *json_str);
+
+/* ---- MQTT session ------------------------------------------------------- */
 
 static BaseType_t iotc_disconnect_mqtt_session(MQTTContext_t *pxMqttContext, NetworkContext_t *pxNetworkContext) {
     MQTTStatus_t xMqttStatus = MQTTSuccess;
@@ -143,14 +208,220 @@ static BaseType_t iotc_disconnect_mqtt_session(MQTTContext_t *pxMqttContext, Net
     return xReturnStatus;
 }
 
+static void iotc_drop_pending_acks(void) {
+    for (int i = 0; i < IOTC_PENDING_ACK_COUNT; i++) {
+        if (s_pending_acks[i].in_use && (s_pending_acks[i].ack_id != NULL)) {
+            iotcl_free(s_pending_acks[i].ack_id);
+        }
+        memset(&s_pending_acks[i], 0, sizeof(s_pending_acks[i]));
+    }
+}
+
 static void iotc_sdk_deinit(void) {
     if (xAppConnectionEstablished == true) {
         iotc_disconnect_mqtt_session(&xMqttContext, &xNetworkContext);
         xAppConnectionEstablished = false;
     }
 
+    iotc_drop_pending_acks();
     iotcl_deinit();
 }
+
+static uint32_t iotc_get_time_ms(void) {
+    uint32_t ulTimeMs = pdTICKS_TO_MS(xTaskGetTickCount());
+
+    return (uint32_t) (ulTimeMs - ulIotcGlobalEntryTimeMs);
+}
+
+/* ---- Cloud-to-device commands ------------------------------------------- */
+
+static void iotc_queue_ack(bool is_ota, const char *ack_id, int status, const char *message) {
+    if (ack_id == NULL) {
+        // Command configured without "receipt required": nothing to send.
+        printf("[c2d] %s (no ack requested)\n", message ? message : "");
+        return;
+    }
+
+    for (int i = 0; i < IOTC_PENDING_ACK_COUNT; i++) {
+        if (!s_pending_acks[i].in_use) {
+            s_pending_acks[i].ack_id = iotcl_strdup(ack_id);
+            if (s_pending_acks[i].ack_id == NULL) {
+                printf("[c2d] out of memory, ack dropped\n");
+                return;
+            }
+            s_pending_acks[i].is_ota = is_ota;
+            s_pending_acks[i].status = status;
+            snprintf(s_pending_acks[i].message, sizeof(s_pending_acks[i].message), "%s", message ? message : "");
+            s_pending_acks[i].in_use = true;
+            return;
+        }
+    }
+    printf("[c2d] ack queue full, ack dropped\n");
+}
+
+static BaseType_t iotc_flush_pending_acks(void) {
+    for (int i = 0; i < IOTC_PENDING_ACK_COUNT; i++) {
+        IotcPendingAck *a = &s_pending_acks[i];
+        if (!a->in_use) {
+            continue;
+        }
+        int rc;
+        if (a->is_ota) {
+            rc = iotcl_mqtt_send_ota_ack(a->ack_id, a->status, a->message);
+        } else {
+            rc = iotcl_mqtt_send_cmd_ack(a->ack_id, a->status, a->message);
+        }
+        iotcl_free(a->ack_id);
+        memset(a, 0, sizeof(*a));
+        if (rc != 0) {
+            // Configuration problem (e.g. no ack topic in the identity
+            // response). Not a connection failure: keep the session.
+            printf("[c2d] sending ack failed: %d\n", rc);
+        }
+        if (s_session_broken) {
+            return pdFAIL;
+        }
+    }
+    return pdPASS;
+}
+
+// Splits "verb arg" in place. Returns the verb; *arg points at the first
+// argument or an empty string.
+static char *iotc_split_command(char *cmd, char **arg) {
+    while (*cmd && isspace((unsigned char) *cmd)) {
+        cmd++;
+    }
+    char *p = cmd;
+    while (*p && !isspace((unsigned char) *p)) {
+        *p = (char) tolower((unsigned char) *p);
+        p++;
+    }
+    if (*p) {
+        *p++ = '\0';
+        while (*p && isspace((unsigned char) *p)) {
+            p++;
+        }
+    }
+    // trim trailing whitespace of the argument
+    char *end = p + strlen(p);
+    while ((end > p) && isspace((unsigned char) end[-1])) {
+        *--end = '\0';
+    }
+    *arg = p;
+    return cmd;
+}
+
+static void iotc_on_command(IotclC2dEventData data) {
+    const char *command = iotcl_c2d_get_command(data);
+    const char *ack_id = iotcl_c2d_get_ack_id(data);
+    char buf[128];
+    char reply[IOTC_ACK_MSG_LEN];
+    int status = IOTCL_C2D_EVT_CMD_FAILED;
+
+    if (command == NULL) {
+        printf("[c2d] command event without a command string\n");
+        iotc_queue_ack(false, ack_id, status, "missing command");
+        return;
+    }
+
+    printf("[c2d] command: \"%s\"\n", command);
+    snprintf(buf, sizeof(buf), "%s", command);
+
+    char *arg;
+    char *verb = iotc_split_command(buf, &arg);
+
+    if (strcmp(verb, "led") == 0) {
+        if ((strcmp(arg, "on") == 0) || (strcmp(arg, "1") == 0) || (strcmp(arg, "true") == 0)) {
+            iotc_demo_led_set(true);
+        } else if ((strcmp(arg, "off") == 0) || (strcmp(arg, "0") == 0) || (strcmp(arg, "false") == 0)) {
+            iotc_demo_led_set(false);
+        } else if ((strcmp(arg, "toggle") == 0) || (arg[0] == '\0')) {
+            iotc_demo_led_toggle();
+        } else {
+            snprintf(reply, sizeof(reply), "usage: led on|off|toggle");
+            goto done;
+        }
+        status = IOTCL_C2D_EVT_CMD_SUCCESS_WITH_ACK;
+        snprintf(reply, sizeof(reply), "LED0 is %s", iotc_demo_led_get() ? "on" : "off");
+        s_publish_requested = true; // report the new LED state right away
+    } else if (strcmp(verb, "set-interval") == 0) {
+        char *endp = NULL;
+        unsigned long ms = strtoul(arg, &endp, 10);
+        if ((arg[0] == '\0') || (endp == NULL) || (*endp != '\0')
+            || (ms < IOTCONNECT_MIN_PUBLISH_DELAY_MS) || (ms > IOTCONNECT_MAX_PUBLISH_DELAY_MS)) {
+            snprintf(reply, sizeof(reply), "usage: set-interval <ms> (%u..%u)",
+                     (unsigned) IOTCONNECT_MIN_PUBLISH_DELAY_MS, (unsigned) IOTCONNECT_MAX_PUBLISH_DELAY_MS);
+            goto done;
+        }
+        s_telemetry_interval_ms = (uint32_t) ms;
+        status = IOTCL_C2D_EVT_CMD_SUCCESS_WITH_ACK;
+        snprintf(reply, sizeof(reply), "telemetry interval set to %lu ms", ms);
+        s_publish_requested = true;
+    } else if (strcmp(verb, "scan") == 0) {
+        s_scan_requested = true;
+        status = IOTCL_C2D_EVT_CMD_SUCCESS_WITH_ACK;
+        snprintf(reply, sizeof(reply), "Wi-Fi survey scheduled");
+    } else if (strcmp(verb, "reboot") == 0) {
+        s_reboot_requested = true;
+        status = IOTCL_C2D_EVT_CMD_SUCCESS_WITH_ACK;
+        snprintf(reply, sizeof(reply), "rebooting");
+    } else {
+        snprintf(reply, sizeof(reply), "unknown command \"%s\"", verb);
+    }
+
+done:
+    printf("[c2d] %s: %s\n", (status == IOTCL_C2D_EVT_CMD_SUCCESS_WITH_ACK) ? "ok" : "failed", reply);
+    iotc_queue_ack(false, ack_id, status, reply);
+}
+
+static void iotc_on_ota(IotclC2dEventData data) {
+    const char *ack_id = iotcl_c2d_get_ack_id(data);
+    const char *version = iotcl_c2d_get_ota_sw_version(data);
+
+    printf("[c2d] OTA request for version %s ignored: this demo does not implement OTA\n",
+           version ? version : "(unknown)");
+    iotc_queue_ack(true, ack_id, IOTCL_C2D_EVT_OTA_FAILED, "OTA not supported by this firmware");
+}
+
+/* ---- MQTT event routing -------------------------------------------------- */
+
+static void iotc_mqtt_event_cb(MQTTContext_t *pxMqttContext,
+                               MQTTPacketInfo_t *pxPacketInfo,
+                               MQTTDeserializedInfo_t *pxDeserializedInfo) {
+    (void) pxMqttContext;
+
+    configASSERT(pxPacketInfo != NULL);
+    configASSERT(pxDeserializedInfo != NULL);
+
+    if ((pxPacketInfo->type & 0xF0U) != MQTT_PACKET_TYPE_PUBLISH) {
+        // SUBACK / PUBACK / etc. The helper frees the outgoing publish slot
+        // on PUBACK, which is required for the next publish to succeed.
+        vHandleOtherIncomingPacket(pxPacketInfo, pxDeserializedInfo->packetIdentifier);
+        return;
+    }
+
+    const MQTTPublishInfo_t *pub = pxDeserializedInfo->pPublishInfo;
+    configASSERT(pub != NULL);
+
+    char topic[IOTC_TOPIC_MAX_LEN];
+    size_t tlen = pub->topicNameLength;
+    if (tlen >= sizeof(topic)) {
+        tlen = sizeof(topic) - 1;
+    }
+    memcpy(topic, pub->pTopicName, tlen);
+    topic[tlen] = '\0';
+
+    printf("[c2d] <- %s : %.*s\n", topic, (int) pub->payloadLength, (const char *) pub->pPayload);
+
+    int rc = iotcl_mqtt_receive_with_length(topic, (const uint8_t *) pub->pPayload, pub->payloadLength);
+    if (rc == IOTCL_ERR_IGNORED) {
+        printf("[c2d] message on unexpected topic ignored\n");
+    } else if (rc != 0) {
+        printf("[c2d] failed to process message: %d\n", rc);
+    }
+}
+
+/* ---- Library configuration --------------------------------------------- */
 
 static int iotc_init_with_config(const char *pcDuid, const char *pcCpid) {
     IotclClientConfig cfg;
@@ -165,6 +436,8 @@ static int iotc_init_with_config(const char *pcDuid, const char *pcCpid) {
     cfg.device.cpid = pcCpid;
     cfg.device.instance_type = IOTCL_DCT_CUSTOM;
     cfg.mqtt_send_cb = iotc_mqtt_send_cb;
+    cfg.events.cmd_cb = iotc_on_command;
+    cfg.events.ota_cb = iotc_on_ota;
 
     int rc = iotcl_init(&cfg);
     if (rc != 0) {
@@ -173,12 +446,6 @@ static int iotc_init_with_config(const char *pcDuid, const char *pcCpid) {
     }
 
     return IOTCL_SUCCESS;
-}
-
-static uint32_t iotc_get_time_ms(void) {
-    uint32_t ulTimeMs = pdTICKS_TO_MS(xTaskGetTickCount());
-
-    return (uint32_t) (ulTimeMs - ulIotcGlobalEntryTimeMs);
 }
 
 static BaseType_t iotc_establish_mqtt_session(
@@ -241,7 +508,7 @@ static BaseType_t iotc_establish_mqtt_session(
                                           pcBrokerHost,
                                           (uint16_t)IOTC_MQTT_RUNTIME_BROKER_PORT,
                                           &xNetworkCredentials,
-                                          IOTC_MQTT_TRANSPORT_TIMEOUT_MS,
+                                          IOTC_MQTT_RECV_TIMEOUT_MS,
                                           IOTC_MQTT_TRANSPORT_TIMEOUT_MS);
     if (xNetworkStatus != TLS_TRANSPORT_SUCCESS) {
         printf("Failed to connect to MQTT broker %s.\n", pcBrokerHost);
@@ -334,6 +601,8 @@ static void iotc_mqtt_send_cb(const char *topic, const char *json_str) {
         printf("[publishJson] OK -> %s : %s\r\n", topic, json_str);
     } else {
         printf("[publishJson] FAIL -> %s\r\n", topic);
+        // A failed publish means the connection is unusable. Let the loop reconnect.
+        s_session_broken = true;
     }
 }
 
@@ -417,6 +686,7 @@ int run_http_identity(const char *duid, const char *cpid, const char *env) {
     if (mc != NULL) {
         printf("IOTC mqtt host is %s\n", (mc->host != NULL) ? mc->host : "(null)");
         printf("IOTC pub topic is %s\n", (mc->pub_rpt != NULL) ? mc->pub_rpt : "(null)");
+        printf("IOTC c2d topic is %s\n", (mc->sub_c2d != NULL) ? mc->sub_c2d : "(null)");
 
         if (mc->username != NULL) {
             iotcl_free(mc->username);
@@ -433,8 +703,9 @@ cleanup:
     return status;
 }
 
+/* ---- Telemetry ----------------------------------------------------------- */
 
-BaseType_t iotc_publish_telemetry(void) {
+static BaseType_t iotc_publish_telemetry_ex(bool button_pressed) {
     if (!xAppConnectionEstablished) {
         printf("publish_telemetry: not connected\n");
         return pdFAIL;
@@ -446,19 +717,65 @@ BaseType_t iotc_publish_telemetry(void) {
         return pdFAIL;
     }
 
-    iotcl_telemetry_set_string(msg, "version", "1.0.0");
-    iotcl_telemetry_set_number(msg, "random", (double) (rand() % 100));
+    char text[32];
+    int8_t rssi = 0;
+
+    iotcl_telemetry_set_string(msg, "version", IOTCONNECT_FW_VERSION);
+    iotcl_telemetry_set_number(msg, "uptime_s", (double) iotc_demo_uptime_s());
+    iotcl_telemetry_set_number(msg, "free_heap", (double) iotc_demo_free_heap());
+    iotcl_telemetry_set_number(msg, "min_free_heap", (double) iotc_demo_min_free_heap());
+    iotcl_telemetry_set_number(msg, "report_interval_ms", (double) s_telemetry_interval_ms);
+
+    if (iotc_demo_wifi_rssi(&rssi) == 0) {
+        iotcl_telemetry_set_number(msg, "wifi_rssi", (double) rssi);
+    } else {
+        iotcl_telemetry_set_null(msg, "wifi_rssi");
+    }
+    if (iotc_demo_wifi_ip(text, sizeof(text)) == 0) {
+        iotcl_telemetry_set_string(msg, "ip", text);
+    }
+    if (iotc_demo_wifi_mac(text, sizeof(text)) == 0) {
+        iotcl_telemetry_set_string(msg, "mac", text);
+    }
+
+    iotcl_telemetry_set_bool(msg, "led", iotc_demo_led_get());
+    iotcl_telemetry_set_number(msg, "button_count", (double) iotc_demo_button_count());
+    iotcl_telemetry_set_bool(msg, "button_pressed", button_pressed);
+
+    if (s_have_survey) {
+        iotcl_telemetry_set_number(msg, "wifi_ap_count", (double) s_survey.count);
+        for (int i = 0; (i < IOTC_DEMO_SURVEY_TOP_N) && (i < s_survey.count); i++) {
+            char path[24];
+            snprintf(path, sizeof(path), "ap%d.ssid", i + 1);
+            iotcl_telemetry_set_string(msg, path, s_survey.aps[i].ssid);
+            snprintf(path, sizeof(path), "ap%d.rssi", i + 1);
+            iotcl_telemetry_set_number(msg, path, (double) s_survey.aps[i].rssi);
+            snprintf(path, sizeof(path), "ap%d.channel", i + 1);
+            iotcl_telemetry_set_number(msg, path, (double) s_survey.aps[i].channel);
+        }
+    }
 
     // Triggers iotc_mqtt_send_cb() -> xPublishToTopic().
     int rc = iotcl_mqtt_send_telemetry(msg, false);
     iotcl_telemetry_destroy(msg);
 
-    return (rc == 0) ? pdPASS : pdFAIL;
+    return ((rc == 0) && !s_session_broken) ? pdPASS : pdFAIL;
 }
 
-BaseType_t iotc_mqtt_connect(MQTTEventCallback_t eventCallback) {
+BaseType_t iotc_publish_telemetry(void) {
+    return iotc_publish_telemetry_ex(false);
+}
+
+static void iotc_run_survey(void) {
+    if (iotc_demo_wifi_survey(&s_survey) == 0) {
+        s_have_survey = true;
+    }
+}
+
+/* ---- Connection ---------------------------------------------------------- */
+
+BaseType_t iotc_mqtt_connect(void) {
     BaseType_t xStatus = pdFAIL;
-    static uint8_t fail_count = 0;
     IotclMqttConfig *pxIotcMqttConfig = iotcl_mqtt_get_config();
     const char *pcClientId = "";
     const char *pcBrokerHost = "";
@@ -474,7 +791,6 @@ BaseType_t iotc_mqtt_connect(MQTTEventCallback_t eventCallback) {
     printf("Attempting connection with Thing name: %s\n", pcClientId);
     printf("Endpoint: %s\n", pcBrokerHost);
 
-retry_connection:
     if (xAppConnectionEstablished == true) {
         printf("Disconnecting MQTT session for reconnection...\n");
         iotc_disconnect_mqtt_session(&xMqttContext, &xNetworkContext);
@@ -484,22 +800,109 @@ retry_connection:
     // Set the network context transport parameters before connecting.
     xNetworkContext.pxParams = &xTlsTransportParams;
 
-    xStatus = iotc_establish_mqtt_session(&xMqttContext, &xNetworkContext, &xBuffer, eventCallback);
+    xStatus = iotc_establish_mqtt_session(&xMqttContext, &xNetworkContext, &xBuffer, iotc_mqtt_event_cb);
 
     if (xStatus != pdTRUE) {
         printf("Failed to establish MQTT session with provisioned credentials.\n");
-        iotc_disconnect_mqtt_session(&xMqttContext, &xNetworkContext);
+        TLS_FreeRTOS_Disconnect(&xNetworkContext);
         xAppConnectionEstablished = false;
-        fail_count++;
-        goto retry_connection;
+        return pdFAIL;
     }
 
-    printf("Sucessfully established connection with provisioned credentials.\n");
-    printf("MQTT connection succeeded.\n");
+    printf("Successfully established connection with provisioned credentials.\n");
     xAppConnectionEstablished = true;
-    fail_count = 0;
+    s_session_broken = false;
 
     return pdPASS;
+}
+
+static BaseType_t iotc_subscribe_c2d(void) {
+    IotclMqttConfig *mc = iotcl_mqtt_get_config();
+
+    if ((mc == NULL) || (mc->sub_c2d == NULL)) {
+        printf("No c2d topic in the identity response; commands will not work.\n");
+        return pdPASS;
+    }
+
+    if (xSubscribeToTopic(&xMqttContext, mc->sub_c2d, (uint16_t) strlen(mc->sub_c2d)) != pdPASS) {
+        printf("Failed to subscribe to %s\n", mc->sub_c2d);
+        return pdFAIL;
+    }
+
+    printf("Subscribed to commands on %s\n", mc->sub_c2d);
+    return pdPASS;
+}
+
+// One connected session. Returns pdPASS when the configured message count
+// was reached, pdFAIL when the connection has to be rebuilt.
+static BaseType_t iotc_session_loop(uint32_t max_messages, uint32_t *published) {
+    TickType_t last_publish = xTaskGetTickCount();
+    TickType_t last_scan = xTaskGetTickCount();
+
+    // Boot report, with the survey taken before connecting.
+    if (iotc_publish_telemetry_ex(false) != pdPASS) {
+        return pdFAIL;
+    }
+    (*published)++;
+
+    while (xAppConnectionEstablished && !s_session_broken) {
+        if ((max_messages != 0U) && (*published >= max_messages)) {
+            return pdPASS;
+        }
+
+        // Service MQTT: receives commands, keep-alive, acks.
+        if (xProcessLoop(&xMqttContext, IOTCONNECT_PROCESS_LOOP_SLICE_MS) != pdPASS) {
+            printf("MQTT process loop failed; reconnecting.\n");
+            return pdFAIL;
+        }
+
+        if (iotc_flush_pending_acks() != pdPASS) {
+            return pdFAIL;
+        }
+
+        if (s_reboot_requested) {
+            vTaskDelay(pdMS_TO_TICKS(500)); // let the ack leave the socket
+            iotc_demo_reboot();
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        bool publish_now = false;
+        bool button = false;
+
+        if (iotc_demo_button_take_event()) {
+            printf("[board] button pressed (%lu total)\n", (unsigned long) iotc_demo_button_count());
+            button = true;
+            publish_now = true;
+        }
+
+        if (s_scan_requested
+            || ((s_scan_interval_ms != 0U) && ((now - last_scan) >= pdMS_TO_TICKS(s_scan_interval_ms)))) {
+            s_scan_requested = false;
+            last_scan = now;
+            iotc_run_survey();
+            publish_now = true;
+        }
+
+        if (s_publish_requested) {
+            s_publish_requested = false;
+            publish_now = true;
+        }
+
+        if ((now - last_publish) >= pdMS_TO_TICKS(s_telemetry_interval_ms)) {
+            publish_now = true;
+        }
+
+        if (publish_now) {
+            if (iotc_publish_telemetry_ex(button) != pdPASS) {
+                printf("publish_telemetry failed; reconnecting.\n");
+                return pdFAIL;
+            }
+            (*published)++;
+            last_publish = xTaskGetTickCount();
+        }
+    }
+
+    return pdFAIL;
 }
 
 int iotconnect_sdk(IotConnectClientConfig *c) {
@@ -515,59 +918,77 @@ int iotconnect_sdk(IotConnectClientConfig *c) {
         return IOTCL_ERR_MISSING_VALUE;
     }
 
-    iotc_sdk_deinit();
-
-    int status = iotc_init_with_config(c->duid, c->cpid);
-
-    if (status != IOTCL_SUCCESS) {
-        iotc_sdk_deinit();
-        return status;
+    if ((c->env[0] == '\0') || (c->cpid[0] == '\0') || (c->duid[0] == '\0')) {
+        printf("Error: IOTCONNECT_ENV, IOTCONNECT_CPID and IOTCONNECT_DUID must be set in app_config.h!\n");
+        return IOTCL_ERR_MISSING_VALUE;
     }
 
-    status = run_http_identity(c->duid, c->cpid, c->env);
-    if (status != IOTCL_SUCCESS) {
-        iotc_sdk_deinit();
-        return status;
-    }
-
-    IotclMqttConfig *mc = iotcl_mqtt_get_config();
-
-    if (mc == NULL) {
-        printf("MQTT config failed\n");
-        iotc_sdk_deinit();
-        return -1;
-    }
-
-    if (iotc_mqtt_connect(c->event_callback) != pdPASS) {
-        printf("MQTT Connect Failure\n");
-        iotc_sdk_deinit();
-        return -1;
-    }
-
-    printf("MQTT Connect successful\n");
-
-    uint32_t ulPublishCount = IOTCONNECT_SDK_PUBLISH_COUNT;
-    uint32_t ulPublishDelayMs = IOTCONNECT_SDK_PUBLISH_DELAY_MS;
-
+    uint32_t max_messages = IOTCONNECT_SDK_PUBLISH_COUNT;
     if (c->telemetry_count != 0U) {
-        ulPublishCount = c->telemetry_count;
+        max_messages = c->telemetry_count;
     }
-
     if (c->telemetry_delay_ms != 0U) {
-        ulPublishDelayMs = c->telemetry_delay_ms;
+        s_telemetry_interval_ms = c->telemetry_delay_ms;
+    }
+    if (c->wifi_scan_interval_ms != 0U) {
+        s_scan_interval_ms = c->wifi_scan_interval_ms;
     }
 
-    for (uint32_t ulIndex = 0; ulIndex < ulPublishCount; ulIndex++) {
-        if (iotc_publish_telemetry() != pdPASS) {
-            printf("publish_telemetry failed at iteration %lu\n", (unsigned long) ulIndex);
+    iotc_demo_board_init();
+
+    uint32_t published = 0;
+    uint32_t backoff_ms = IOTCONNECT_RECONNECT_MIN_DELAY_MS;
+
+    for (;;) {
+        iotc_sdk_deinit();
+
+        int status = iotc_init_with_config(c->duid, c->cpid);
+        if (status != IOTCL_SUCCESS) {
             iotc_sdk_deinit();
-            return -1;
+            return status;
         }
 
-        if ((ulIndex + 1U) < ulPublishCount) {
-            vTaskDelay(pdMS_TO_TICKS(ulPublishDelayMs));
+        status = run_http_identity(c->duid, c->cpid, c->env);
+        if (status != IOTCL_SUCCESS) {
+            printf("Discovery/identity failed (%d); retrying in %lu ms\n", status, (unsigned long) backoff_ms);
+            goto retry;
+        }
+
+        if (iotcl_mqtt_get_config() == NULL) {
+            printf("MQTT config failed\n");
+            goto retry;
+        }
+
+        // Survey before connecting so the first report already carries it,
+        // and so the scan does not stall a fresh MQTT session.
+        if (s_scan_interval_ms != 0U) {
+            iotc_run_survey();
+        }
+
+        if (iotc_mqtt_connect() != pdPASS) {
+            printf("MQTT connect failed; retrying in %lu ms\n", (unsigned long) backoff_ms);
+            goto retry;
+        }
+
+        if (iotc_subscribe_c2d() != pdPASS) {
+            goto retry;
+        }
+
+        printf("Connected. LED0, button, Wi-Fi survey and commands are live.\n");
+        backoff_ms = IOTCONNECT_RECONNECT_MIN_DELAY_MS;
+
+        if (iotc_session_loop(max_messages, &published) == pdPASS) {
+            printf("Published %lu messages; done.\n", (unsigned long) published);
+            iotc_sdk_deinit();
+            return IOTCL_SUCCESS;
+        }
+
+retry:
+        iotc_sdk_deinit();
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        backoff_ms *= 2U;
+        if (backoff_ms > IOTCONNECT_RECONNECT_MAX_DELAY_MS) {
+            backoff_ms = IOTCONNECT_RECONNECT_MAX_DELAY_MS;
         }
     }
-
-    return IOTCL_SUCCESS;
 }

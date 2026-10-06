@@ -2291,33 +2291,27 @@ static void testdata(void) {
 
 static void iotc_app_connect(void)
 {
-	IotConnectClientConfig testconfig = {
-	  .env = IOTCONNECT_ENV,
-	  .cpid = IOTCONNECT_CPID,
-	  .duid = IOTCONNECT_DUID,
-	  .event_callback = prvEventCallback
-	};
-	iotconnect_sdk(&testconfig);
+    /* Runs the /IOTCONNECT interactive demo: telemetry, button events, Wi-Fi
+     * survey and cloud commands. iotconnect_sdk() reconnects on failure and
+     * only returns when a message limit is configured or the configuration
+     * is unusable. */
+    IotConnectClientConfig config = {
+        .env = IOTCONNECT_ENV,
+        .cpid = IOTCONNECT_CPID,
+        .duid = IOTCONNECT_DUID,
+        .connection_type = IOTC_CT_AWS,
+        .telemetry_count = 0,          /* forever */
+        .telemetry_delay_ms = 0,       /* library default */
+        .wifi_scan_interval_ms = 0     /* library default */
+    };
 
+    int rc = iotconnect_sdk(&config);
 
-    /* ---- DEBUG: hard-pause here, block scheduler and interrupts so no
-     *              other FreeRTOS task / ISR can take over. Remove when done. */
-    IOT_INFO("[%s] *** IOTCONNECT APP DONE at %s:%d ***", __func__, __FILE__, __LINE__)
-    taskENTER_CRITICAL();           /* disable scheduler + mask interrupts */
-    __asm volatile ("cpsid i");     /* belt-and-suspenders: disable IRQs   */
-    __asm volatile ("cpsid f");     /* disable FaultMask (NMI-safe spin)   */
-#if defined(__GNUC__)
-    __asm volatile ("bkpt #0");     /* halt in debugger if attached        */
-#endif
+    IOT_INFO("[%s] iotconnect_sdk returned %d; demo stopped", __func__, rc)
     for (;;)
     {
-        __asm volatile ("nop");
+        vTaskDelay(portCONVERT_MS_2_TICKS(1000));
     }
-    /* unreachable */
-    /* taskEXIT_CRITICAL(); */
-
-
-    commonRC = MQTTSuccess;
 }
 
 static void aws_dpm_app_recv(app_dpm_info_rtm *_rtmData)
